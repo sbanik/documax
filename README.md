@@ -1,254 +1,194 @@
 # Documax
 
-Documax packages a directory tree into a portable text document and recreates
-it later. Documents can be reviewed, pasted, validated, repaired, minimized,
-and expanded using one Go CLI.
+Documax turns a directory tree into one portable document, then validates,
+repairs, minimizes, expands, or unpacks it later. It is a Go CLI designed for
+source code, configuration, Markdown, and other text files where whitespace
+and indentation matter.
 
-## Install from source
+## Build
 
 Requires Go 1.27 or later.
 
-```sh
-git clone https://github.com/sbanik/documax.git
+\`\`\`sh
+git clone https://github.com/YOUR_GITHUB_USERNAME/documax.git
 cd documax
 go test ./...
 go build -o documax .
-# optional:
-go install .
-```
+\`\`\`
 
-## Document format
+## Formats
 
-An expanded document has directory sections with relative file sections:
+Bracket syntax is the default:
 
-```text
-|<--- DIRECTORY="project/" --->|
-|<--- FILE="src/main.py" --->|
+\`\`\`text
+[DIR: project/]
+[FILE: src/main.py]
 def greet():
     print("hello")
-|>--- FILE ---<|
-|<--- FILE="pyproject.toml" --->|
+[/FILE]
+[FILE: pyproject.toml]
 [project]
 name = "example"
-|>--- FILE ---<|
-|>--- DIRECTORY ---<|
-```
+[/FILE]
+[/DIR]
+\`\`\`
 
-- Directory markers are `|<--- DIRECTORY="path/" --->|` and
-  `|>--- DIRECTORY ---<|`.
-- File markers are `|<--- FILE="relative/path" --->|` and
-  `|>--- FILE ---<|`.
-- Structural markers must not be indented.
-- Empty directory sections are valid and are created when unpacking.
+The XML syntax is available when packing with \`--format xml\`:
+
+\`\`\`xml
+<d:dir path="project/">
+<d:file path="src/main.py">
+def greet():
+    print("hello")
+</d:file>
+</d:dir>
+\`\`\`
+
+Documax automatically detects bracket and XML documents for \`validate\`,
+\`fix\`, \`minimize\`, \`expand\`, and \`unpack\`.
+
 - File paths are relative to their directory section.
+- Structural tags must not be indented.
+- Empty directory sections are valid and are created by unpacking.
+- Do not use unescaped structural tags as ordinary expanded file content.
 
-### Escaped marker content
+## Minimized documents
 
-If expanded file content contains Documax marker text, Documax escapes it and
-marks the header with `;ESCAPED;`. The original content is restored at
-unpack time.
+\`minimize\` compresses every raw file payload using Gzip and encodes the
+compressed bytes in standard Base64. The bracket metadata is:
 
-```text
-|<--- FILE="example.txt";ESCAPED; --->|
-\|\<--- FILE="not-a-real-tag" --->|
-|>--- FILE ---<|
-```
+\`\`\`text
+[FILE: src/main.py;ENC=GZ+B64]H4sIAAAAAAAA...[/FILE]
+\`\`\`
 
-### Minimized documents
+The XML equivalent is:
 
-`minimize` writes each file body in Base64 and marks it with the agreed
-metadata:
+\`\`\`xml
+<d:file path="src/main.py" encoding="gzip+base64">H4sIAAAAAAAA...</d:file>
+\`\`\`
 
-```text
-|<--- DIRECTORY="project/" --->||<--- FILE="src/main.py";ENCODED="BASE64"; --->|ZGVmIGdyZWV0KCk6CiAgICBwcmludCgiaGVsbG8iKQo=|>--- FILE ---<||>--- DIRECTORY ---<|
-```
-
-`expand` decodes Base64 and restores readable source. Base64 round-trips
-indentation, blank lines, and other file bytes, which is especially useful for
-Python files.
+\`expand\` and \`unpack\` reverse the encoding. Since compression and Base64
+operate on bytes, Python indentation, YAML spacing, blank lines, and final
+newlines survive a minimize/expand/unpack round-trip.
 
 ## Commands
 
-### Pack a directory
+### Pack
 
-```sh
+\`\`\`sh
 documax pack --dir ./my-project --output project.documax.txt
-```
+documax pack --dir ./my-project --format xml --output project.xml.txt
+\`\`\`
 
-Documax reads root-level `.gitignore` rules plus additional
-`.documax.ignore` rules. The latter is never packed; `.gitignore` is
-included. Empty directories are emitted as empty directory sections.
-
-Packing has two phases: discovery calculates totals without publishing output,
-then writing creates a temporary document and atomically publishes it only when
-complete.
+Root-level \`.gitignore\` patterns are applied along with additional
+\`.documax.ignore\` patterns. \`.documax.ignore\` is excluded; \`.gitignore\`
+is retained. Packing first discovers eligible directories/files, then writes a
+temporary output and atomically publishes it on success.
 
 ### Pack pasted content
 
-```sh
-documax pack --from-clipboard --dir project/ --output project.documax.txt
-```
+\`\`\`sh
+documax pack --from-clipboard --dir project/ --output project.txt
+\`\`\`
 
-Enter a relative file path, paste its content, then finish with this exact line:
+Enter a relative path, paste content, then enter \`|>--- CONTENT ---<|\` on its
+own line. Blank lines are preserved. An empty path ends the session; empty
+content skips that pending file.
 
-```text
-|>--- CONTENT ---<|
-```
+### Validate and fix
 
-Blank lines remain part of the pasted content. An empty file-path prompt ends
-the session; an empty content block skips the pending file.
-
-### Validate
-
-```sh
+\`\`\`sh
 documax validate project.documax.txt
-```
-
-Expanded and minimized documents are both valid inputs. Diagnostics are
-editor-clickable:
-
-```text
-project.documax.txt:43: missing FILE closing tag before DIRECTORY closing tag
-```
-
-### Fix
-
-```sh
-documax fix project.documax.txt > fixed.documax.txt
+documax fix project.documax.txt > fixed.txt
 documax fix --in-place project.documax.txt
-```
+\`\`\`
 
-Fixing is deliberately conservative. It removes structural-tag indentation,
-adds a missing file closing tag before a directory transition, and appends
-obvious missing closing tags at EOF. It does not attempt unsafe guesses about
-paths or file contents.
+Diagnostics use editor-clickable locations:
+
+\`\`\`text
+project.documax.txt:43: missing FILE closing tag before DIRECTORY closing tag
+\`\`\`
+
+\`fix\` only removes structural-tag indentation and inserts obvious missing
+closing tags before directory transitions or at EOF.
 
 ### Minimize and expand
 
-```sh
-documax minimize project.documax.txt --output project.min.txt
+\`\`\`sh
+documax minimize project.txt --output project.min.txt
 documax expand project.min.txt --output project.expanded.txt
-```
+\`\`\`
 
-Use expanded documents for review and editing; use minimized documents for
-compact transport.
+Minification preserves the input document's bracket or XML syntax.
 
 ### Unpack
 
-```sh
-documax unpack project.documax.txt --dir ./restored
-```
+\`\`\`sh
+documax unpack project.txt --dir ./restored
+documax unpack project.txt --dir ./restored --subpath d/e
+\`\`\`
 
-Without an input argument, Documax uses `documax-output.txt` in the current
-directory.
+If no input filename is supplied, Documax uses \`documax-output.txt\` in the
+current directory. \`--subpath c\` matches any directory component named
+\`c\`; \`--subpath d/e\` matches that consecutive component sequence.
 
-Unpack first validates the entire document. If invalid, it prints diagnostics,
-attempts safe repairs in memory, validates the result again, then builds a
-complete plan before changing the destination. Use `--fix-in-place` to save
-automatic repairs to the source document.
+Unpack validates first. If validation fails it prints diagnostics, tries safe
+in-memory repairs, validates again, then creates a complete phase-one plan.
+Phase two creates directories and atomically writes each file. Use
+\`--fix-in-place\` to save automatic repairs to the source document.
 
-Each destination file is written to a temporary sibling and atomically renamed
-only after a complete write. Ctrl+C removes the active temporary file while
-leaving completed files intact.
+The output directory itself may be absolute. Embedded document paths are
+normally restricted to safe relative paths. Use \`--allow-absolute-paths\`
+only for trusted documents that intentionally contain absolute paths.
 
-### Partial unpack
+## Homebrew
 
-```sh
-documax unpack project.documax.txt --dir ./restored --subpath d/e
-```
+Publish Documax as a Homebrew **formula**, not a cask. After creating a tagged
+GitHub release, create a personal tap and add \`Formula/documax.rb\`:
 
-`--subpath` matches consecutive directory components. For example `d/e`
-matches both `a/b/d/e` and `a/b/c/d/e`.
+\`\`\`ruby
+class Documax < Formula
+  desc "Package and restore directory trees as portable documents"
+  homepage "https://github.com/YOUR_GITHUB_USERNAME/documax"
+  url "https://github.com/YOUR_GITHUB_USERNAME/documax/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
+  license "MIT"
 
-### Absolute paths
+  depends_on "go" => :build
 
-The target directory may always be absolute:
+  def install
+    system "go", "build", *std_go_args(output: bin/"documax"), "."
+  end
 
-```sh
-documax unpack project.documax.txt --dir /Users/me/Projects
-```
+  test do
+    (testpath/"input.txt").write <<~EOS
+      [DIR: project/]
+      [FILE: main.py]
+      print("hello")
+      [/FILE]
+      [/DIR]
+    EOS
+    system bin/"documax", "validate", "input.txt"
+  end
+end
+\`\`\`
 
-Embedded document paths are normally required to be relative and may not use
-traversal. To trust and allow absolute paths embedded in a document:
+\`\`\`sh
+brew tap-new YOUR_GITHUB_USERNAME/homebrew-tap
+brew install --build-from-source YOUR_GITHUB_USERNAME/homebrew-tap/documax
+brew test YOUR_GITHUB_USERNAME/homebrew-tap/documax
+brew audit --strict --online YOUR_GITHUB_USERNAME/homebrew-tap/documax
+\`\`\`
 
-```sh
-documax unpack project.documax.txt --allow-absolute-paths
-```
+See the official [tap guide](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)
+and [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook).
 
 ## Development
 
-```sh
+\`\`\`sh
 gofmt -w main.go main_test.go
 go test ./...
-go run . validate documax-output.txt
-```
-
-## Publish with Homebrew
-
-Documax is a command-line application, so publish it as a Homebrew **formula**,
-not a cask. The usual route is a personal tap named, for example,
-`github.com/YOUR_GITHUB_USERNAME/homebrew-tap`.
-
-1. Publish this repository and tag a release, such as `v0.1.0`.
-2. Create a tap and formula:
-
-   ```sh
-   brew tap-new YOUR_GITHUB_USERNAME/homebrew-tap
-   brew create \
-     https://github.com/YOUR_GITHUB_USERNAME/documax/archive/refs/tags/v0.1.0.tar.gz \
-     --tap YOUR_GITHUB_USERNAME/homebrew-tap \
-     --set-name documax
-   ```
-
-3. Put this formula in the tap's `Formula/documax.rb`, replacing every
-   placeholder:
-
-   ```ruby
-   class Documax < Formula
-     desc "Package and restore directory trees as portable text documents"
-     homepage "https://github.com/YOUR_GITHUB_USERNAME/documax"
-     url "https://github.com/YOUR_GITHUB_USERNAME/documax/archive/refs/tags/v0.1.0.tar.gz"
-     sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
-     license "MIT"
-
-     depends_on "go" => :build
-
-     def install
-       system "go", "build", *std_go_args(output: bin/"documax"), "."
-     end
-
-     test do
-       (testpath/"input.txt").write <<~EOS
-         |<--- DIRECTORY="project/" --->|
-         |<--- FILE="main.py" --->|
-         print("hello")
-         |>--- FILE ---<|
-         |>--- DIRECTORY ---<|
-       EOS
-       system bin/"documax", "validate", "input.txt"
-     end
-   end
-   ```
-
-4. Calculate the release-tarball checksum:
-
-   ```sh
-   curl -L https://github.com/YOUR_GITHUB_USERNAME/documax/archive/refs/tags/v0.1.0.tar.gz \
-     | shasum -a 256
-   ```
-
-5. Test, audit, commit, and push the tap:
-
-   ```sh
-   brew install --build-from-source YOUR_GITHUB_USERNAME/homebrew-tap/documax
-   brew test YOUR_GITHUB_USERNAME/homebrew-tap/documax
-   brew audit --strict --online YOUR_GITHUB_USERNAME/homebrew-tap/documax
-   brew install YOUR_GITHUB_USERNAME/homebrew-tap/documax
-   ```
-
-Homebrew's current guidance for taps and formulae is available in the
-[tap documentation](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap) and
-[Formula Cookbook](https://docs.brew.sh/Formula-Cookbook).
+\`\`\`
 
 ## License
 

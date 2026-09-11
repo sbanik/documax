@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	pathpkg "path"
@@ -21,20 +23,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const DefaultDocFile = "documax-output.txt"
+
+type docFormat string
+
 const (
-	DirStartPrefix  = "|<--- DIRECTORY=\""
-	DirStartSuffix  = "\" --->|"
-	DirEndMarker    = "|>--- DIRECTORY ---<|"
-	FileStartPrefix = "|<--- FILE=\""
-	FileEndMarker   = "|>--- FILE ---<|"
-	EscapedMeta     = ";ESCAPED;"
-	DefaultDocFile  = "documax-output.txt"
+	formatBracket docFormat = "bracket"
+	formatXML     docFormat = "xml"
 )
 
-var (
-	tagRE         = regexp.MustCompile(`\|<--- DIRECTORY="([^"]+)" --->\||\|<--- FILE="([^"]+)"(?:(;ESCAPED;)|;ENCODED="([^"]+)";)? --->\||\|>--- FILE ---<\||\|>--- DIRECTORY ---<\|`)
-	indentedTagRE = regexp.MustCompile(`(?m)^[\t ]+\|(?:<--- (?:DIRECTORY|FILE)=|>--- (?:DIRECTORY|FILE))`)
-)
+var bracketTagRE = regexp.MustCompile(`\[DIR: ([^\]\r\n]+)\]|\[FILE: ([^\]\r\n]+)\]|\[/FILE\]|\[/DIR\]`)
+var xmlTagRE = regexp.MustCompile(`<d:dir\s+path="([^"]+)"\s*>|<d:file\s+path="([^"]+)"(?:\s+encoding="gzip\+base64")?\s*>|</d:file>|</d:dir>`)
 
 type diagnostic struct {
 	line    int
@@ -52,10 +51,13 @@ type docDirectory struct {
 	line  int
 	files []docFile
 }
-type document struct{ directories []docDirectory }
+type document struct {
+	format      docFormat
+	directories []docDirectory
+}
 type tag struct {
-	kind             string
-	start, end, line int
+	kind, path, encoding string
+	start, end, line     int
 }
 
 func main() {
@@ -67,21 +69,22 @@ func main() {
 }
 
 func packCmd() *cobra.Command {
-	var dir, output string
+	var dir, output, format string
 	var interactive bool
 	cmd := &cobra.Command{Use: "pack", RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, cancel := setupSignalContext()
 		defer cancel()
 		if interactive {
-			return runPackInteractive(ctx, dir, output)
+			return runPackInteractive(ctx, dir, output, docFormat(format))
 		}
 		if dir == "" {
 			return errors.New("missing --dir flag for directory packing")
 		}
-		return runPackDir(ctx, dir, output)
+		return runPackDir(ctx, dir, output, docFormat(format))
 	}}
 	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Directory to pack")
 	cmd.Flags().StringVarP(&output, "output", "o", DefaultDocFile, "Output Documax file path")
+	cmd.Flags().StringVarP(&format, "format", "f", string(formatBracket), "Output format: bracket or xml")
 	cmd.Flags().BoolVar(&interactive, "from-clipboard", false, "Read pasted content until the content terminator")
 	return cmd
 }
@@ -149,26 +152,18 @@ func expandCmd() *cobra.Command {
 }
 
 func parseDocument(raw []byte) (document, []diagnostic) {
-	var doc document
+	doc := document{format: detectFormat(raw)}
 	var ds []diagnostic
-	for _, pos := range indentedTagRE.FindAllIndex(raw, -1) {
-		ds = append(ds, diagnostic{lineAt(raw, pos[0]), "syntax tag must not be indented"})
+	tags := parseTags(raw, doc.format)
+	if len(tags) == 0 {
+		return doc, []diagnostic{{line: 1, message: "no Documax structural tags found"}}
 	}
-	matches := tagRE.FindAllSubmatchIndex(raw, -1)
 	var currentDir *docDirectory
 	var currentFile *docFile
 	contentStart := 0
-	for _, m := range matches {
-		t := tag{start: m[0], end: m[1], line: lineAt(raw, m[0])}
-		switch {
-		case m[2] >= 0:
-			t.kind = "dir-start"
-		case m[4] >= 0:
-			t.kind = "file-start"
-		case bytes.Equal(raw[m[0]:m[1]], []byte(FileEndMarker)):
-			t.kind = "file-end"
-		default:
-			t.kind = "dir-end"
+	for _, t := range tags {
+		if indented(raw, t.start) {
+			ds = append(ds, diagnostic{t.line, "syntax tag must not be indented"})
 		}
 		switch t.kind {
 		case "dir-start":
@@ -179,7 +174,7 @@ func parseDocument(raw []byte) (document, []diagnostic) {
 			if currentDir != nil {
 				ds = append(ds, diagnostic{t.line, "nested DIRECTORY section is not allowed"})
 			}
-			doc.directories = append(doc.directories, docDirectory{path: string(raw[m[2]:m[3]]), line: t.line})
+			doc.directories = append(doc.directories, docDirectory{path: t.path, line: t.line})
 			currentDir = &doc.directories[len(doc.directories)-1]
 		case "dir-end":
 			if currentDir == nil {
@@ -199,10 +194,7 @@ func parseDocument(raw []byte) (document, []diagnostic) {
 			if currentFile != nil {
 				ds = append(ds, diagnostic{t.line, "missing FILE closing tag before next FILE tag"})
 			}
-			f := docFile{path: string(raw[m[4]:m[5]]), line: t.line, escaped: m[6] >= 0}
-			if m[8] >= 0 {
-				f.encoding = string(raw[m[8]:m[9]])
-			}
+			f := docFile{path: t.path, line: t.line, encoding: t.encoding}
 			currentDir.files = append(currentDir.files, f)
 			currentFile = &currentDir.files[len(currentDir.files)-1]
 			contentStart = t.end
@@ -216,12 +208,12 @@ func parseDocument(raw []byte) (document, []diagnostic) {
 				body = stripOneLeadingNewline(body)
 			}
 			currentFile.content = body
-			if currentFile.encoding != "" && currentFile.encoding != "BASE64" {
+			if currentFile.encoding != "" && currentFile.encoding != "GZ+B64" {
 				ds = append(ds, diagnostic{currentFile.line, fmt.Sprintf("unsupported encoding %q", currentFile.encoding)})
 			}
-			if currentFile.encoding == "BASE64" {
-				if _, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(body))); err != nil {
-					ds = append(ds, diagnostic{currentFile.line, "invalid BASE64 file content"})
+			if currentFile.encoding == "GZ+B64" {
+				if _, err := gzipBase64Decode(body); err != nil {
+					ds = append(ds, diagnostic{currentFile.line, "invalid GZ+B64 file content"})
 				}
 			}
 			currentFile = nil
@@ -234,6 +226,46 @@ func parseDocument(raw []byte) (document, []diagnostic) {
 		ds = append(ds, diagnostic{currentDir.line, "unclosed DIRECTORY section at EOF"})
 	}
 	return doc, ds
+}
+
+func detectFormat(raw []byte) docFormat {
+	if bytes.Contains(raw, []byte("<d:dir")) || bytes.Contains(raw, []byte("<d:file")) {
+		return formatXML
+	}
+	return formatBracket
+}
+
+func parseTags(raw []byte, format docFormat) []tag {
+	re := bracketTagRE
+	if format == formatXML {
+		re = xmlTagRE
+	}
+	var tags []tag
+	for _, m := range re.FindAllSubmatchIndex(raw, -1) {
+		text := string(raw[m[0]:m[1]])
+		t := tag{start: m[0], end: m[1], line: lineAt(raw, m[0])}
+		switch {
+		case m[2] >= 0:
+			t.kind, t.path = "dir-start", string(raw[m[2]:m[3]])
+		case m[4] >= 0:
+			t.kind, t.path = "file-start", string(raw[m[4]:m[5]])
+			if (format == formatBracket && strings.Contains(t.path, ";ENC=GZ+B64")) || (format == formatXML && strings.Contains(text, `encoding="gzip+base64"`)) {
+				t.encoding = "GZ+B64"
+				t.path = strings.TrimSuffix(t.path, ";ENC=GZ+B64")
+			}
+		case text == "[/FILE]" || text == "</d:file>":
+			t.kind = "file-end"
+		default:
+			t.kind = "dir-end"
+		}
+		tags = append(tags, t)
+	}
+	return tags
+}
+
+func indented(raw []byte, start int) bool {
+	lineStart := bytes.LastIndexByte(raw[:start], '\n') + 1
+	return start > lineStart && len(bytes.Trim(raw[lineStart:start], " \t")) == 0
 }
 
 func stripOneLeadingNewline(b []byte) []byte {
@@ -265,7 +297,9 @@ func validateDocumax(file string) (bool, []string) {
 }
 
 func fixDocument(raw []byte) ([]byte, []diagnostic, bool) {
-	fixed := indentedTagRE.ReplaceAllFunc(raw, func(match []byte) []byte {
+	format := detectFormat(raw)
+	indentRE := regexp.MustCompile(`(?m)^[\t ]+(?:\[(?:DIR:|FILE:|/FILE|/DIR)|<d:)`)
+	fixed := indentRE.ReplaceAllFunc(raw, func(match []byte) []byte {
 		return bytes.TrimLeft(match, " \t")
 	})
 	changed := !bytes.Equal(raw, fixed)
@@ -273,14 +307,14 @@ func fixDocument(raw []byte) ([]byte, []diagnostic, bool) {
 	if changed {
 		notes = append(notes, diagnostic{1, "removed indentation from syntax tags"})
 	}
-	ms := tagRE.FindAllIndex(fixed, -1)
+	tags := parseTags(fixed, format)
 	inDir, inFile := false, false
 	inserts := map[int]string{}
 	addEnd := func(pos, line int) {
 		if _, ok := inserts[pos]; ok {
 			return
 		}
-		s := FileEndMarker
+		s := fileEnd(format)
 		if pos == len(fixed) {
 			if pos > 0 && fixed[pos-1] != '\n' {
 				s = "\n" + s
@@ -293,26 +327,25 @@ func fixDocument(raw []byte) ([]byte, []diagnostic, bool) {
 		notes = append(notes, diagnostic{line, "inserted missing FILE closing tag"})
 		changed = true
 	}
-	for _, m := range ms {
-		text := string(fixed[m[0]:m[1]])
-		switch {
-		case strings.HasPrefix(text, DirStartPrefix):
+	for _, t := range tags {
+		switch t.kind {
+		case "dir-start":
 			if inFile {
-				addEnd(m[0], lineAt(fixed, m[0]))
+				addEnd(t.start, t.line)
 				inFile = false
 			}
 			inDir = true
-		case text == DirEndMarker:
+		case "dir-end":
 			if inFile {
-				addEnd(m[0], lineAt(fixed, m[0]))
+				addEnd(t.start, t.line)
 				inFile = false
 			}
 			inDir = false
-		case strings.HasPrefix(text, FileStartPrefix):
+		case "file-start":
 			if inDir {
 				inFile = true
 			}
-		case text == FileEndMarker:
+		case "file-end":
 			inFile = false
 		}
 	}
@@ -325,7 +358,7 @@ func fixDocument(raw []byte) ([]byte, []diagnostic, bool) {
 		if len(fixed) > 0 && fixed[len(fixed)-1] != '\n' {
 			prefix = "\n"
 		}
-		inserts[len(fixed)] += prefix + DirEndMarker + "\n"
+		inserts[len(fixed)] += prefix + dirEnd(format) + "\n"
 		notes = append(notes, diagnostic{lineAt(fixed, len(fixed)), "inserted missing DIRECTORY closing tag"})
 		changed = true
 	}
@@ -371,27 +404,63 @@ func runFix(file string, inPlace bool) error {
 
 func decodedContent(f docFile) ([]byte, error) {
 	data := f.content
-	if f.encoding == "BASE64" {
-		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
-		if err != nil {
-			return nil, err
-		}
-		data = decoded
-	}
-	if f.escaped {
-		data = []byte(unescapeMarkers(string(data)))
+	if f.encoding == "GZ+B64" {
+		return gzipBase64Decode(data)
 	}
 	return data, nil
 }
-func directoryHeader(p string) string { return DirStartPrefix + p + DirStartSuffix }
-func fileHeader(p string, escaped bool, encoded bool) string {
+func gzipBase64Encode(data []byte) (string, error) {
+	var compressed bytes.Buffer
+	w := gzip.NewWriter(&compressed)
+	if _, err := w.Write(data); err != nil {
+		return "", err
+	}
+	if err := w.Close(); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(compressed.Bytes()), nil
+}
+func gzipBase64Decode(data []byte) ([]byte, error) {
+	compressed, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil {
+		return nil, err
+	}
+	r, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+func directoryHeader(format docFormat, p string) string {
+	if format == formatXML {
+		return `<d:dir path="` + p + `">`
+	}
+	return "[DIR: " + p + "]"
+}
+func fileHeader(format docFormat, p string, encoded bool) string {
+	if format == formatXML {
+		if encoded {
+			return `<d:file path="` + p + `" encoding="gzip+base64">`
+		}
+		return `<d:file path="` + p + `">`
+	}
 	if encoded {
-		return FileStartPrefix + p + "\";ENCODED=\"BASE64\"; --->|"
+		return "[FILE: " + p + ";ENC=GZ+B64]"
 	}
-	if escaped {
-		return FileStartPrefix + p + EscapedMeta + "\" --->|"
+	return "[FILE: " + p + "]"
+}
+func fileEnd(format docFormat) string {
+	if format == formatXML {
+		return "</d:file>"
 	}
-	return FileStartPrefix + p + "\" --->|"
+	return "[/FILE]"
+}
+func dirEnd(format docFormat) string {
+	if format == formatXML {
+		return "</d:dir>"
+	}
+	return "[/DIR]"
 }
 
 func runMinify(file, output string) error {
@@ -406,17 +475,21 @@ func runMinify(file, output string) error {
 	}
 	var out bytes.Buffer
 	for _, d := range doc.directories {
-		out.WriteString(directoryHeader(d.path))
+		out.WriteString(directoryHeader(doc.format, d.path))
 		for _, f := range d.files {
 			data, err := decodedContent(f)
 			if err != nil {
 				return err
 			}
-			out.WriteString(fileHeader(f.path, false, true))
-			out.WriteString(base64.StdEncoding.EncodeToString(data))
-			out.WriteString(FileEndMarker)
+			encoded, err := gzipBase64Encode(data)
+			if err != nil {
+				return err
+			}
+			out.WriteString(fileHeader(doc.format, f.path, true))
+			out.WriteString(encoded)
+			out.WriteString(fileEnd(doc.format))
 		}
-		out.WriteString(DirEndMarker)
+		out.WriteString(dirEnd(doc.format))
 	}
 	return writeOutput(output, out.Bytes())
 }
@@ -435,20 +508,20 @@ func runExpand(file, output string) error {
 func renderExpanded(doc document) []byte {
 	var out bytes.Buffer
 	for _, d := range doc.directories {
-		out.WriteString(directoryHeader(d.path) + "\n")
+		out.WriteString(directoryHeader(doc.format, d.path) + "\n")
 		for _, f := range d.files {
 			data, err := decodedContent(f)
 			if err != nil {
 				continue
 			}
-			body, escaped := escapeMarkers(string(data))
-			out.WriteString(fileHeader(f.path, escaped, false) + "\n" + body)
+			body := string(data)
+			out.WriteString(fileHeader(doc.format, f.path, false) + "\n" + body)
 			if !strings.HasSuffix(body, "\n") {
 				out.WriteByte('\n')
 			}
-			out.WriteString(FileEndMarker + "\n")
+			out.WriteString(fileEnd(doc.format) + "\n")
 		}
-		out.WriteString(DirEndMarker + "\n")
+		out.WriteString(dirEnd(doc.format) + "\n")
 	}
 	return out.Bytes()
 }
@@ -462,7 +535,14 @@ func writeOutput(path string, data []byte) error {
 
 type packItem struct{ rel, full string }
 
-func runPackDir(ctx context.Context, source, output string) error {
+func runPackDir(ctx context.Context, source, output string, formats ...docFormat) error {
+	format := formatBracket
+	if len(formats) > 0 {
+		format = formats[0]
+	}
+	if format != formatBracket && format != formatXML {
+		return errors.New("format must be bracket or xml")
+	}
 	abs, err := filepath.Abs(source)
 	if err != nil {
 		return err
@@ -529,7 +609,7 @@ func runPackDir(ctx context.Context, source, output string) error {
 	defer func() { tmp.Close(); os.Remove(tmpName) }()
 	w := bufio.NewWriter(tmp)
 	root := filepath.Base(abs) + "/"
-	if _, err = w.WriteString(directoryHeader(root) + "\n"); err != nil {
+	if _, err = w.WriteString(directoryHeader(format, root) + "\n"); err != nil {
 		return err
 	}
 	bar := progressbar.Default(int64(len(files)), "Packing files")
@@ -543,8 +623,8 @@ func runPackDir(ctx context.Context, source, output string) error {
 		if err != nil {
 			return err
 		}
-		body, escaped := escapeMarkers(string(data))
-		if _, err = w.WriteString(fileHeader(item.rel, escaped, false) + "\n" + body); err != nil {
+		body := string(data)
+		if _, err = w.WriteString(fileHeader(format, item.rel, false) + "\n" + body); err != nil {
 			return err
 		}
 		if !strings.HasSuffix(body, "\n") {
@@ -552,16 +632,16 @@ func runPackDir(ctx context.Context, source, output string) error {
 				return err
 			}
 		}
-		if _, err = w.WriteString(FileEndMarker + "\n"); err != nil {
+		if _, err = w.WriteString(fileEnd(format) + "\n"); err != nil {
 			return err
 		}
 		_ = bar.Add(1)
 	}
-	if _, err = w.WriteString(DirEndMarker + "\n"); err != nil {
+	if _, err = w.WriteString(dirEnd(format) + "\n"); err != nil {
 		return err
 	}
 	for _, dir := range emptyDirs {
-		if _, err = w.WriteString(directoryHeader(root+dir+"/") + "\n" + DirEndMarker + "\n"); err != nil {
+		if _, err = w.WriteString(directoryHeader(format, root+dir+"/") + "\n" + dirEnd(format) + "\n"); err != nil {
 			return err
 		}
 	}
@@ -574,7 +654,14 @@ func runPackDir(ctx context.Context, source, output string) error {
 	return os.Rename(tmpName, outAbs)
 }
 
-func runPackInteractive(ctx context.Context, scope, output string) error {
+func runPackInteractive(ctx context.Context, scope, output string, formats ...docFormat) error {
+	format := formatBracket
+	if len(formats) > 0 {
+		format = formats[0]
+	}
+	if format != formatBracket && format != formatXML {
+		return errors.New("format must be bracket or xml")
+	}
 	r := bufio.NewReader(os.Stdin)
 	if scope == "" {
 		fmt.Print("Enter base directory path: ")
@@ -584,7 +671,7 @@ func runPackInteractive(ctx context.Context, scope, output string) error {
 			return errors.New("empty directory path: exiting")
 		}
 	}
-	doc := document{directories: []docDirectory{{path: filepath.ToSlash(scope)}}}
+	doc := document{format: format, directories: []docDirectory{{path: filepath.ToSlash(scope)}}}
 	for {
 		select {
 		case <-ctx.Done():

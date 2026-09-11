@@ -1,0 +1,1272 @@
+
+
+|<--- DIRECTORY="Documents/DemoProjects/kotlin/" --->|
+|<--- FILE="pom.xml" --->|
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.4</version>
+    <relativePath/>
+  </parent>
+  <groupId>com.example</groupId>
+  <artifactId>blog-kotlin</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+
+  <properties>
+    <java.version>21</java.version>
+    <kotlin.version>1.9.25</kotlin.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.module</groupId>
+      <artifactId>jackson-module-kotlin</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-reflect</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-stdlib</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
+    <plugins>
+      <plugin>
+        <groupId>org.jetbrains.kotlin</groupId>
+        <artifactId>kotlin-maven-plugin</artifactId>
+        <configuration>
+          <args>
+            <arg>-Xjsr305=strict</arg>
+          </args>
+          <compilerPlugins>
+            <plugin>spring</plugin>
+          </compilerPlugins>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-maven-allopen</artifactId>
+            <version>${kotlin.version}</version>
+          </dependency>
+        </dependencies>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+|>--- FILE ---<|
+|<--- FILE="src/main/resources/application.properties" --->|
+server.port=8093
+app.data.storage-dir=./data
+app.data.posts=posts.json
+app.data.users=users.json
+|>--- FILE ---<|
+|<--- FILE="src/main/kotlin/com/example/blog/ModelsAndDTOs.kt" --->|
+package com.example.blog
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import jakarta.validation.constraints.Min
+import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.NotNull
+import jakarta.validation.constraints.Size
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class Geo(val lat: String? = null, val lng: String? = null)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class Company(val name: String? = null, val catchPhrase: String? = null, val bs: String? = null)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class Address(
+    val street: String? = null,
+    val suite: String? = null,
+    val city: String? = null,
+    val zipcode: String? = null,
+    val geo: Geo? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class BlogUser(
+    var id: Long? = null,
+    val name: String? = null,
+    val username: String? = null,
+    val email: String? = null,
+    val address: Address? = null,
+    val phone: String? = null,
+    val website: String? = null,
+    val company: Company? = null
+)
+
+data class UserDetails(
+    val userId: Long?,
+    val username: String?,
+    val city: String?,
+    val name: String?,
+    val email: String?,
+    val website: String?
+) {
+    companion object {
+        fun from(u: BlogUser) = UserDetails(u.id, u.username, u.address?.city, u.name, u.email, u.website)
+    }
+}
+
+data class BlogPost(
+    var id: Long? = null,
+    val userId: Long? = null,
+    var title: String? = null,
+    var content: String? = null
+)
+
+data class BlogPostData(val id: Long?, val title: String?, val content: String?) {
+    companion object {
+        fun from(p: BlogPost) = BlogPostData(p.id, p.title, p.content)
+    }
+}
+
+data class UserPosts(val author: UserDetails, val posts: List<BlogPostData>)
+
+data class NewBlogPostDTO(
+    @field:NotNull @field:Min(1) val userId: Long?,
+    @field:NotBlank @field:Size(min = 5, max = 80) val title: String?,
+    @field:NotBlank @field:Size(min = 50, max = 1000) val content: String?
+)
+
+data class UpdateBlogPostDTO(
+    @field:NotBlank @field:Size(min = 5, max = 80) val title: String?,
+    @field:NotBlank @field:Size(min = 50, max = 1000) val content: String?
+)
+
+data class ErrorResponse(val error: String, val message: String)
+|>--- FILE ---<|
+|<--- FILE="src/main/kotlin/com/example/blog/Repositories.kt" --->|
+package com.example.blog
+
+import com.fasterxml.jackson.databind.ObjectMapper
+import jakarta.annotation.PostConstruct
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.core.io.ResourceLoader
+import org.springframework.http.HttpStatus
+import org.springframework.stereotype.Component
+import org.springframework.web.bind.annotation.ResponseStatus
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.Paths
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
+
+@ResponseStatus(HttpStatus.NOT_FOUND)
+class ResourceNotFoundException(msg: String) : RuntimeException(msg)
+
+@Component
+class JsonDataLoader(
+    private val mapper: ObjectMapper,
+    private val resourceLoader: ResourceLoader,
+    @Value("\${app.data.storage-dir:./data}") private val storageDir: String
+) {
+    fun <T> loadList(path: String, clazz: Class<T>): List<T> {
+        val target = Paths.get(storageDir).resolve(path.trimStart('/'))
+        if (Files.exists(target)) {
+            val type = mapper.typeFactory.constructCollectionType(List::class.java, clazz)
+            return mapper.readValue(target.toFile(), type)
+        }
+        val res = resourceLoader.getResource("classpath:$path")
+        if (!res.exists()) return emptyList()
+        val type = mapper.typeFactory.constructCollectionType(List::class.java, clazz)
+        val data: List<T> = mapper.readValue(res.inputStream, type)
+        persistList(path, data)
+        return data
+    }
+
+    @Synchronized
+    fun <T> persistList(path: String, data: List<T>) {
+        val target = Paths.get(storageDir).resolve(path.trimStart('/'))
+        target.parent?.let { Files.createDirectories(it) }
+        mapper.writerWithDefaultPrettyPrinter().writeValue(target.toFile(), data)
+    }
+}
+
+abstract class AbstractRepository<T : Any>(
+    private val loader: JsonDataLoader,
+    private val fileName: String,
+    private val entityClass: Class<T>,
+    private val idGetter: (T) -> Long?,
+    private val idSetter: (T, Long) -> Unit
+) {
+    private val storage = ConcurrentHashMap<Long, T>()
+    private val sequence = AtomicLong(0)
+
+    @PostConstruct
+    @Synchronized
+    fun init() {
+        val data = loader.loadList(fileName, entityClass)
+        var maxId = 0L
+        for (item in data) {
+            val id = idGetter(item) ?: continue
+            storage[id] = item
+            maxId = maxOf(maxId, id)
+        }
+        sequence.set(maxId)
+    }
+
+    @Synchronized
+    fun save(entity: T): T {
+        var id = idGetter(entity)
+        if (id == null || id <= 0) {
+            id = sequence.incrementAndGet()
+            idSetter(entity, id)
+        } else {
+            sequence.accumulateAndGet(id, ::maxOf)
+        }
+        storage[id] = entity
+        loader.persistList(fileName, storage.values.toList())
+        return entity
+    }
+
+    fun findById(id: Long): T? = storage[id]
+    fun findAll(): List<T> = storage.values.toList()
+}
+|>--- FILE ---<|
+|<--- FILE="src/main/kotlin/com/example/blog/Controllers.kt" --->|
+package com.example.blog
+
+import jakarta.validation.Valid
+import jakarta.validation.constraints.Positive
+import jakarta.validation.constraints.Size
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.stereotype.Repository
+import org.springframework.stereotype.Service
+import org.springframework.validation.annotation.Validated
+import org.springframework.web.bind.annotation.*
+
+@Repository
+class BlogPostDB(loader: JsonDataLoader, @Value("\${app.data.posts}") file: String) :
+    AbstractRepository<BlogPost>(loader, file, BlogPost::class.java, { it.id }, { p, id -> p.id = id })
+
+@Repository
+class BlogUserDB(loader: JsonDataLoader, @Value("\${app.data.users}") file: String) :
+    AbstractRepository<BlogUser>(loader, file, BlogUser::class.java, { it.id }, { u, id -> u.id = id })
+
+@Service
+class BlogService(private val postDB: BlogPostDB, private val userDB: BlogUserDB) {
+    fun getAllPosts(): List<BlogPost> = postDB.findAll()
+
+    fun getPostById(id: Long): BlogPost =
+        postDB.findById(id) ?: throw ResourceNotFoundException("No post found with id: $id")
+
+    fun searchPosts(title: String): List<BlogPostData> =
+        postDB.findAll()
+            .filter { it.title?.contains(title, ignoreCase = true) == true }
+            .map { BlogPostData.from(it) }
+
+    fun createPost(dto: NewBlogPostDTO): BlogPostData {
+        val post = BlogPost(userId = dto.userId, title = dto.title, content = dto.content)
+        return BlogPostData.from(postDB.save(post))
+    }
+
+    fun updatePost(id: Long, dto: UpdateBlogPostDTO): BlogPostData {
+        val existing = postDB.findById(id) ?: throw ResourceNotFoundException("No post found with id: $id")
+        existing.title = dto.title
+        existing.content = dto.content
+        return BlogPostData.from(postDB.save(existing))
+    }
+
+    fun filterUsers(name: String?, user: String?, email: String?, city: String?, company: String?): List<UserDetails> =
+        userDB.findAll()
+            .filter { u -> name == null || u.name?.contains(name, true) == true }
+            .filter { u -> user == null || u.username?.contains(user, true) == true }
+            .filter { u -> email == null || u.email?.contains(email, true) == true }
+            .filter { u -> city == null || u.address?.city?.contains(city, true) == true }
+            .filter { u -> company == null || u.company?.name?.contains(company, true) == true }
+            .map { UserDetails.from(it) }
+
+    fun getUserById(id: Long): UserDetails =
+        userDB.findById(id)?.let { UserDetails.from(it) }
+            ?: throw ResourceNotFoundException("User with id $id not found")
+
+    fun getUserPosts(id: Long): UserPosts {
+        val user = userDB.findById(id) ?: throw ResourceNotFoundException("User with id $id not found")
+        val posts = postDB.findAll().filter { it.userId == id }.map { BlogPostData.from(it) }
+        return UserPosts(UserDetails.from(user), posts)
+    }
+}
+
+@RestControllerAdvice
+class GlobalExceptionHandler {
+    @ExceptionHandler(ResourceNotFoundException::class)
+    fun handleNotFound(e: ResourceNotFoundException): ResponseEntity<ErrorResponse> =
+        ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorResponse("404 NOT_FOUND", e.message ?: "Not Found"))
+}
+
+@Validated
+@RestController
+@RequestMapping("/api/v1/posts")
+class PostController(private val service: BlogService) {
+    @GetMapping fun getAll() = ResponseEntity.ok(service.getAllPosts())
+    @GetMapping("/{id}") fun getById(@PathVariable @Positive id: Long) = ResponseEntity.ok(service.getPostById(id))
+    @GetMapping("/search/{title}") fun search(@PathVariable @Size(min = 2, max = 100) title: String) = ResponseEntity.ok(service.searchPosts(title))
+    @PostMapping("/create") fun create(@RequestBody @Valid dto: NewBlogPostDTO) = ResponseEntity.ok(service.createPost(dto))
+    @PutMapping("/{id}") fun update(@PathVariable id: Long, @RequestBody @Valid dto: UpdateBlogPostDTO) = ResponseEntity.ok(service.updatePost(id, dto))
+}
+
+@Validated
+@RestController
+@RequestMapping("/api/v1/users")
+class UserController(private val service: BlogService) {
+    @GetMapping fun getUsers(
+        @RequestParam(required = false) name: String?,
+        @RequestParam(required = false) username: String?,
+        @RequestParam(required = false) email: String?,
+        @RequestParam(required = false) city: String?,
+        @RequestParam(required = false) company: String?
+    ) = ResponseEntity.ok(service.filterUsers(name, username, email, city, company))
+
+    @GetMapping("/{userId}") fun getById(@PathVariable @Positive userId: Long) = ResponseEntity.ok(service.getUserById(userId))
+    @GetMapping("/{userId}/posts") fun getPosts(@PathVariable @Positive userId: Long) = ResponseEntity.ok(service.getUserPosts(userId))
+}
+|>--- FILE ---<|
+|>--- DIRECTORY ---<|
+|<--- DIRECTORY="Documents/DemoProjects/fastapi/" --->|
+|<--- FILE="requirements.txt" --->|
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+|>--- FILE ---<|
+|<--- FILE="main.py" --->|
+import json
+import os
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, List, Optional
+from fastapi import FastAPI, HTTPException, Path as FPath, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+STORAGE_DIR = Path("./data")
+SEED_POSTS = Path("./posts.json")
+SEED_USERS = Path("./users.json")
+lock = Lock()
+
+app = FastAPI(title="Blog API - FastAPI")
+
+# --- Schemas ---
+class Geo(BaseModel):
+    lat: Optional[str] = None
+    lng: Optional[str] = None
+
+class Company(BaseModel):
+    name: Optional[str] = None
+    catchPhrase: Optional[str] = None
+    bs: Optional[str] = None
+
+class Address(BaseModel):
+    street: Optional[str] = None
+    suite: Optional[str] = None
+    city: Optional[str] = None
+    zipcode: Optional[str] = None
+    geo: Optional[Geo] = None
+
+class BlogUser(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[Address] = None
+    phone: Optional[str] = None
+    website: Optional[str] = None
+    company: Optional[Company] = None
+
+class UserDetails(BaseModel):
+    userId: Optional[int]
+    username: Optional[str]
+    city: Optional[str]
+    name: Optional[str]
+    email: Optional[str]
+    website: Optional[str]
+
+class BlogPost(BaseModel):
+    id: Optional[int] = None
+    userId: Optional[int] = None
+    title: Optional[str] = None
+    content: Optional[str] = None
+
+class BlogPostData(BaseModel):
+    id: Optional[int]
+    title: Optional[str]
+    content: Optional[str]
+
+class NewBlogPostDTO(BaseModel):
+    userId: int = Field(..., ge=1)
+    title: str = Field(..., min_length=5, max_length=80)
+    content: str = Field(..., min_length=50, max_length=1000)
+
+class UpdateBlogPostDTO(BaseModel):
+    title: str = Field(..., min_length=5, max_length=80)
+    content: str = Field(..., min_length=50, max_length=1000)
+
+class UserPosts(BaseModel):
+    author: UserDetails
+    posts: List[BlogPostData]
+
+# --- In-Memory Repository with JSON Persistence ---
+class Store:
+    def __init__(self, filename: str, seed_path: Path):
+        self.filename = filename
+        self.target_path = STORAGE_DIR / filename
+        self.seed_path = seed_path
+        self.data: Dict[int, dict] = {}
+        self.seq = 0
+        self._load()
+
+    def _load(self):
+        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        source = self.target_path if self.target_path.exists() else self.seed_path
+        if source.exists():
+            with open(source, "r", encoding="utf-8") as f:
+                items = json.load(f)
+                for it in items:
+                    self.data[it["id"]] = it
+                    if it["id"] > self.seq:
+                        self.seq = it["id"]
+            self._flush()
+
+    def _flush(self):
+        with open(self.target_path, "w", encoding="utf-8") as f:
+            json.dump(list(self.data.values()), f, indent=2)
+
+    def save(self, item: dict) -> dict:
+        with lock:
+            if not item.get("id") or item["id"] <= 0:
+                self.seq += 1
+                item["id"] = self.seq
+            else:
+                self.seq = max(self.seq, item["id"])
+            self.data[item["id"]] = item
+            self._flush()
+            return item
+
+post_store = Store("posts.json", SEED_POSTS)
+user_store = Store("users.json", SEED_USERS)
+
+def map_user_details(u: dict) -> UserDetails:
+    addr = u.get("address") or {}
+    return UserDetails(
+        userId=u.get("id"),
+        username=u.get("username"),
+        city=addr.get("city"),
+        name=u.get("name"),
+        email=u.get("email"),
+        website=u.get("website")
+    )
+
+# --- Routes ---
+@app.get("/api/v1/posts", response_model=List[BlogPost])
+def get_posts():
+    return list(post_store.data.values())
+
+@app.get("/api/v1/posts/{id}", response_model=BlogPost)
+def get_post_by_id(id: int = FPath(..., gt=0)):
+    if id not in post_store.data:
+        raise HTTPException(status_code=404, detail=f"No post found with id: {id}")
+    return post_store.data[id]
+
+@app.get("/api/v1/posts/search/{title}", response_model=List[BlogPostData])
+def search_posts(title: str = FPath(..., min_length=2, max_length=100)):
+    return [
+        BlogPostData(id=p["id"], title=p["title"], content=p["content"])
+        for p in post_store.data.values()
+        if title.lower() in p.get("title", "").lower()
+    ]
+
+@app.post("/api/v1/posts/create", response_model=BlogPostData)
+def create_post(payload: NewBlogPostDTO):
+    saved = post_store.save(payload.model_dump())
+    return BlogPostData(id=saved["id"], title=saved["title"], content=saved["content"])
+
+@app.put("/api/v1/posts/{id}", response_model=BlogPostData)
+def update_post(id: int, payload: UpdateBlogPostDTO):
+    if id not in post_store.data:
+        raise HTTPException(status_code=404, detail=f"No post found with id: {id}")
+    post = post_store.data[id]
+    post["title"] = payload.title
+    post["content"] = payload.content
+    saved = post_store.save(post)
+    return BlogPostData(id=saved["id"], title=saved["title"], content=saved["content"])
+
+@app.get("/api/v1/users", response_model=List[UserDetails])
+def get_users(
+    name: Optional[str] = Query(None),
+    username: Optional[str] = Query(None),
+    email: Optional[str] = Query(None),
+    city: Optional[str] = Query(None),
+    company: Optional[str] = Query(None)
+):
+    results = []
+    for u in user_store.data.values():
+        if name and name.lower() not in u.get("name", "").lower(): continue
+        if username and username.lower() not in u.get("username", "").lower(): continue
+        if email and email.lower() not in u.get("email", "").lower(): continue
+        if city and city.lower() not in (u.get("address") or {}).get("city", "").lower(): continue
+        if company and company.lower() not in (u.get("company") or {}).get("name", "").lower(): continue
+        results.append(map_user_details(u))
+    return results
+
+@app.get("/api/v1/users/{userId}", response_model=UserDetails)
+def get_user_by_id(userId: int = FPath(..., gt=0)):
+    if userId not in user_store.data:
+        raise HTTPException(status_code=404, detail=f"User with id {userId} not found")
+    return map_user_details(user_store.data[userId])
+
+@app.get("/api/v1/users/{userId}/posts", response_model=UserPosts)
+def get_user_posts(userId: int = FPath(..., gt=0)):
+    if userId not in user_store.data:
+        raise HTTPException(status_code=404, detail=f"User with id {userId} not found")
+    posts = [
+        BlogPostData(id=p["id"], title=p["title"], content=p["content"])
+        for p in post_store.data.values() if p.get("userId") == userId
+    ]
+    return UserPosts(author=map_user_details(user_store.data[userId]), posts=posts)
+
+@app.exception_handler(HTTPException)
+async def custom_http_exception_handler(_, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": f"{exc.status_code} NOT_FOUND" if exc.status_code == 404 else "ERROR", "message": exc.detail}
+    )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8095)
+|>--- FILE ---<|
+|>--- DIRECTORY ---<|
+|<--- DIRECTORY="Documents/DemoProjects/gin/" --->|
+|<--- FILE="go.mod" --->|
+module blog-go
+
+go 1.22
+
+|>--- FILE ---<|
+|<--- FILE="main.go" --->|
+package main
+
+import (
+"encoding/json"
+"fmt"
+"net/http"
+"os"
+"path/filepath"
+"strconv"
+"strings"
+"sync"
+)
+
+type Address struct {
+City string `json:"city"`
+}
+
+type Company struct {
+Name string `json:"name"`
+}
+
+type BlogUser struct {
+ID       int64   `json:"id"`
+Name     string  `json:"name"`
+Username string  `json:"username"`
+Email    string  `json:"email"`
+Address  Address `json:"address"`
+Website  string  `json:"website"`
+Company  Company `json:"company"`
+}
+
+type UserDetails struct {
+UserID   int64  `json:"userId"`
+Username string `json:"username"`
+City     string `json:"city"`
+Name     string `json:"name"`
+Email    string `json:"email"`
+Website  string `json:"website"`
+}
+
+type BlogPost struct {
+ID      int64  `json:"id"`
+UserID  int64  `json:"userId"`
+Title   string `json:"title"`
+Content string `json:"content"`
+}
+
+type BlogPostData struct {
+ID      int64  `json:"id"`
+Title   string `json:"title"`
+Content string `json:"content"`
+}
+
+type UserPosts struct {
+Author UserDetails    `json:"author"`
+Posts  []BlogPostData `json:"posts"`
+}
+
+type ErrorResponse struct {
+Error   string `json:"error"`
+Message string `json:"message"`
+}
+
+type Storage struct {
+mu       sync.RWMutex
+posts    map[int64]BlogPost
+users    map[int64]BlogUser
+postSeq  int64
+dataDir  string
+}
+
+func NewStorage() *Storage {
+s := &Storage{
+posts:   make(map[int64]BlogPost),
+users:   make(map[int64]BlogUser),
+dataDir: "./data",
+}
+_ = os.MkdirAll(s.dataDir, 0755)
+s.load()
+return s
+}
+
+func (s *Storage) load() {
+loadJSON := func(filename, seed string, target interface{}) {
+path := filepath.Join(s.dataDir, filename)
+b, err := os.ReadFile(path)
+if err != nil {
+b, _ = os.ReadFile(seed)
+}
+if len(b) > 0 {
+_ = json.Unmarshal(b, target)
+}
+}
+
+var pList []BlogPost
+loadJSON("posts.json", "posts.json", &pList)
+for _, p := range pList {
+s.posts[p.ID] = p
+if p.ID > s.postSeq { s.postSeq = p.ID }
+}
+
+var uList []BlogUser
+loadJSON("users.json", "users.json", &uList)
+for _, u := range uList {
+s.users[u.ID] = u
+}
+}
+
+func (s *Storage) persistPosts() {
+var list []BlogPost
+for _, p := range s.posts { list = append(list, p) }
+b, _ := json.MarshalIndent(list, "", "  ")
+_ = os.WriteFile(filepath.Join(s.dataDir, "posts.json"), b, 0644)
+}
+
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(status)
+_ = json.NewEncoder(w).Encode(data)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+writeJSON(w, status, ErrorResponse{Error: fmt.Sprintf("%d %s", status, http.StatusText(status)), Message: msg})
+}
+
+func main() {
+s := NewStorage()
+mux := http.NewServeMux()
+
+mux.HandleFunc("/api/v1/posts", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodGet { http.Error(w, "Method Not Allowed", 405); return }
+s.mu.RLock()
+defer s.mu.RUnlock()
+list := make([]BlogPost, 0, len(s.posts))
+for _, p := range s.posts { list = append(list, p) }
+writeJSON(w, http.StatusOK, list)
+})
+
+mux.HandleFunc("/api/v1/posts/search/", func(w http.ResponseWriter, r *http.Request) {
+title := strings.TrimPrefix(r.URL.Path, "/api/v1/posts/search/")
+if len(title) < 2 || len(title) > 100 {
+writeError(w, http.StatusBadRequest, "Invalid search title length")
+return
+}
+s.mu.RLock()
+defer s.mu.RUnlock()
+var out []BlogPostData
+for _, p := range s.posts {
+if strings.Contains(strings.ToLower(p.Title), strings.ToLower(title)) {
+out = append(out, BlogPostData{ID: p.ID, Title: p.Title, Content: p.Content})
+}
+}
+writeJSON(w, http.StatusOK, out)
+})
+
+mux.HandleFunc("/api/v1/posts/create", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost { http.Error(w, "Method Not Allowed", 405); return }
+var body struct {
+UserID  int64  `json:"userId"`
+Title   string `json:"title"`
+Content string `json:"content"`
+}
+if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.UserID < 1 || len(body.Title) < 5 || len(body.Title) > 80 || len(body.Content) < 50 || len(body.Content) > 1000 {
+writeError(w, http.StatusBadRequest, "Validation error")
+return
+}
+s.mu.Lock()
+defer s.mu.Unlock()
+s.postSeq++
+post := BlogPost{ID: s.postSeq, UserID: body.UserID, Title: body.Title, Content: body.Content}
+s.posts[post.ID] = post
+s.persistPosts()
+writeJSON(w, http.StatusOK, BlogPostData{ID: post.ID, Title: post.Title, Content: post.Content})
+})
+
+mux.HandleFunc("/api/v1/posts/", func(w http.ResponseWriter, r *http.Request) {
+idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/posts/")
+id, err := strconv.ParseInt(idStr, 10, 64)
+if err != nil || id <= 0 { writeError(w, http.StatusBadRequest, "Invalid ID"); return }
+
+s.mu.Lock()
+defer s.mu.Unlock()
+post, ok := s.posts[id]
+if !ok { writeError(w, http.StatusNotFound, fmt.Sprintf("No post found with id: %d", id)); return }
+
+if r.Method == http.MethodGet {
+writeJSON(w, http.StatusOK, post)
+return
+}
+if r.Method == http.MethodPut {
+var body struct {
+Title   string `json:"title"`
+Content string `json:"content"`
+}
+if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Title) < 5 || len(body.Title) > 80 || len(body.Content) < 50 || len(body.Content) > 1000 {
+writeError(w, http.StatusBadRequest, "Validation error")
+return
+}
+post.Title = body.Title
+post.Content = body.Content
+s.posts[id] = post
+s.persistPosts()
+writeJSON(w, http.StatusOK, BlogPostData{ID: post.ID, Title: post.Title, Content: post.Content})
+return
+}
+})
+
+mux.HandleFunc("/api/v1/users", func(w http.ResponseWriter, r *http.Request) {
+q := r.URL.Query()
+name, user, email, city, company := q.Get("name"), q.Get("username"), q.Get("email"), q.Get("city"), q.Get("company")
+s.mu.RLock()
+defer s.mu.RUnlock()
+var out []UserDetails
+for _, u := range s.users {
+if name != "" && !strings.Contains(strings.ToLower(u.Name), strings.ToLower(name)) { continue }
+if user != "" && !strings.Contains(strings.ToLower(u.Username), strings.ToLower(user)) { continue }
+if email != "" && !strings.Contains(strings.ToLower(u.Email), strings.ToLower(email)) { continue }
+if city != "" && !strings.Contains(strings.ToLower(u.Address.City), strings.ToLower(city)) { continue }
+if company != "" && !strings.Contains(strings.ToLower(u.Company.Name), strings.ToLower(company)) { continue }
+out = append(out, UserDetails{UserID: u.ID, Username: u.Username, City: u.Address.City, Name: u.Name, Email: u.Email, Website: u.Website})
+}
+writeJSON(w, http.StatusOK, out)
+})
+
+mux.HandleFunc("/api/v1/users/", func(w http.ResponseWriter, r *http.Request) {
+parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+if len(parts) < 4 { writeError(w, http.StatusBadRequest, "Invalid URL"); return }
+userId, err := strconv.ParseInt(parts[3], 10, 64)
+if err != nil || userId <= 0 { writeError(w, http.StatusBadRequest, "Invalid User ID"); return }
+
+s.mu.RLock()
+defer s.mu.RUnlock()
+u, ok := s.users[userId]
+if !ok { writeError(w, http.StatusNotFound, fmt.Sprintf("User with id %d not found", userId)); return }
+ud := UserDetails{UserID: u.ID, Username: u.Username, City: u.Address.City, Name: u.Name, Email: u.Email, Website: u.Website}
+
+if len(parts) == 4 {
+writeJSON(w, http.StatusOK, ud)
+return
+}
+if len(parts) == 5 && parts[4] == "posts" {
+var pList []BlogPostData
+for _, p := range s.posts {
+if p.UserID == userId {
+pList = append(pList, BlogPostData{ID: p.ID, Title: p.Title, Content: p.Content})
+}
+}
+writeJSON(w, http.StatusOK, UserPosts{Author: ud, Posts: pList})
+return
+}
+})
+
+fmt.Println("Go blog service listening on :8097")
+_ = http.ListenAndServe(":8097", mux)
+}
+
+|>--- FILE ---<|
+|>--- DIRECTORY ---<|
+|<--- DIRECTORY="Documents/DemoProjects/node_typescript/" --->|
+|<--- FILE="package.json" --->|
+{
+  "name": "blog-node-express",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.9",
+    "typescript": "^5.5.2"
+  }
+}
+|>--- FILE ---<|
+|<--- FILE="src/index.ts" --->|
+import express, { Request, Response, NextFunction } from 'express';
+import fs from 'fs';
+import path from 'path';
+import { z } from 'zod';
+
+const app = express();
+app.use(express.json());
+
+const DATA_DIR = path.resolve('./data');
+const POSTS_FILE = path.join(DATA_DIR, 'posts.json');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+
+interface BlogPost {
+  id: number;
+  userId: number;
+  title: string;
+  content: string;
+}
+
+interface BlogUser {
+  id: number;
+  name: string;
+  username: string;
+  email: string;
+  address?: { city?: string };
+  company?: { name?: string };
+  website?: string;
+}
+
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+function initStore<T extends { id: number }>(targetFile: string, seedFile: string): Map<number, T> {
+  const store = new Map<number, T>();
+  const src = fs.existsSync(targetFile) ? targetFile : path.resolve(seedFile);
+  if (fs.existsSync(src)) {
+    const list: T[] = JSON.parse(fs.readFileSync(src, 'utf-8'));
+    list.forEach(i => store.set(i.id, i));
+    if (!fs.existsSync(targetFile)) {
+      fs.writeFileSync(targetFile, JSON.stringify(list, null, 2));
+    }
+  }
+  return store;
+}
+
+const posts = initStore<BlogPost>(POSTS_FILE, './posts.json');
+const users = initStore<BlogUser>(USERS_FILE, './users.json');
+let postSeq = Math.max(0, ...Array.from(posts.keys()));
+
+const persistPosts = () => {
+  fs.writeFileSync(POSTS_FILE, JSON.stringify(Array.from(posts.values()), null, 2));
+};
+
+const mapUserDetails = (u: BlogUser) => ({
+  userId: u.id,
+  username: u.username,
+  city: u.address?.city ?? null,
+  name: u.name,
+  email: u.email,
+  website: u.website ?? null,
+});
+
+// Zod Schemas
+const newPostSchema = z.object({
+  userId: z.number().int().positive(),
+  title: z.string().min(5).max(80),
+  content: z.string().min(50).max(1000)
+});
+
+const updatePostSchema = z.object({
+  title: z.string().min(5).max(80),
+  content: z.string().min(50).max(1000)
+});
+
+// Endpoints
+app.get('/api/v1/posts', (_req: Request, res: Response) => {
+  res.json(Array.from(posts.values()));
+});
+
+app.get('/api/v1/posts/:id(\\d+)', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const post = posts.get(id);
+  if (!post) return res.status(404).json({ error: '404 NOT_FOUND', message: `No post found with id: ${id}` });
+  res.json(post);
+});
+
+app.get('/api/v1/posts/search/:title', (req: Request, res: Response) => {
+  const title = req.params.title.toLowerCase();
+  const matched = Array.from(posts.values())
+    .filter(p => p.title.toLowerCase().includes(title))
+    .map(({ id, title, content }) => ({ id, title, content }));
+  res.json(matched);
+});
+
+app.post('/api/v1/posts/create', (req: Request, res: Response) => {
+  const body = newPostSchema.parse(req.body);
+  const post: BlogPost = { id: ++postSeq, ...body };
+  posts.set(post.id, post);
+  persistPosts();
+  res.json({ id: post.id, title: post.title, content: post.content });
+});
+
+app.put('/api/v1/posts/:id(\\d+)', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!posts.has(id)) return res.status(404).json({ error: '404 NOT_FOUND', message: `No post found with id: ${id}` });
+  const body = updatePostSchema.parse(req.body);
+  const existing = posts.get(id)!;
+  existing.title = body.title;
+  existing.content = body.content;
+  persistPosts();
+  res.json({ id: existing.id, title: existing.title, content: existing.content });
+});
+
+app.get('/api/v1/users', (req: Request, res: Response) => {
+  const { name, username, email, city, company } = req.query as Record<string, string | undefined>;
+  const list = Array.from(users.values())
+    .filter(u => !name || u.name.toLowerCase().includes(name.toLowerCase()))
+    .filter(u => !username || u.username.toLowerCase().includes(username.toLowerCase()))
+    .filter(u => !email || u.email.toLowerCase().includes(email.toLowerCase()))
+    .filter(u => !city || (u.address?.city ?? '').toLowerCase().includes(city.toLowerCase()))
+    .filter(u => !company || (u.company?.name ?? '').toLowerCase().includes(company.toLowerCase()))
+    .map(mapUserDetails);
+  res.json(list);
+});
+
+app.get('/api/v1/users/:userId(\\d+)', (req: Request, res: Response) => {
+  const userId = Number(req.params.userId);
+  const user = users.get(userId);
+  if (!user) return res.status(404).json({ error: '404 NOT_FOUND', message: `User with id ${userId} not found` });
+  res.json(mapUserDetails(user));
+});
+
+app.get('/api/v1/users/:userId(\\d+)/posts', (req: Request, res: Response) => {
+  const userId = Number(req.params.userId);
+  const user = users.get(userId);
+  if (!user) return res.status(404).json({ error: '404 NOT_FOUND', message: `User with id ${userId} not found` });
+  const userPosts = Array.from(posts.values())
+    .filter(p => p.userId === userId)
+    .map(({ id, title, content }) => ({ id, title, content }));
+  res.json({ author: mapUserDetails(user), posts: userPosts });
+});
+
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  res.status(400).json({ error: 'BAD_REQUEST', message: err.message });
+});
+
+app.listen(8099, () => console.log('Node blog service listening on :8099'));
+
+|>--- FILE ---<|
+|>--- DIRECTORY ---<|
+|<--- DIRECTORY="Documents/DemoProjects/playwright_typescript/" --->|
+|<--- FILE="package.json" --->|
+{
+  "name": "blog-e2e-playwright-bdd",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "playwright-bdd test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0",
+    "playwright-bdd": "^7.1.0",
+    "typescript": "^5.5.2"
+  }
+}
+|>--- FILE ---<|
+|<--- FILE="playwright.config.ts" --->|
+import { defineConfig } from '@playwright/test';
+import { defineBddConfig } from 'playwright-bdd';
+
+const testDir = defineBddConfig({
+  features: 'features/**/*.feature',
+  steps: 'steps/**/*.ts',
+});
+
+const APP_PORT = process.env.APP_PORT || '8091';
+
+export default defineConfig({
+  testDir,
+  use: {
+    baseURL: `http://localhost:${APP_PORT}`,
+    extraHTTPHeaders: {
+      'Content-Type': 'application/json',
+    },
+  },
+  reporter: 'html',
+});
+|>--- FILE ---<|
+|<--- FILE="features/blog.feature" --->|
+Feature: Blog & User API Contract Verification
+
+  Scenario: Fetch all blog posts
+    When I request GET "/api/v1/posts"
+    Then the response status should be 200
+    And the post list should contain at least 1 item
+
+  Scenario: Create and fetch a new blog post
+    When I send POST "/api/v1/posts/create" with:
+      """
+      {
+        "userId": 1,
+        "title": "Contract Evaluation Automated Post",
+        "content": "This content matches the minimum length constraint required by the contract specification."
+      }
+      """
+    Then the response status should be 200
+    And the returned post should contain the title "Contract Evaluation Automated Post"
+
+  Scenario: Fetch user details and user specific posts
+    When I request GET "/api/v1/users/1"
+    Then the response status should be 200
+    And the user name should be "Leanne Graham"
+    When I request GET "/api/v1/users/1/posts"
+    Then the response status should be 200
+    And the author username should be "Bret"
+
+|>--- FILE ---<|
+|<--- FILE="steps/blog.steps.ts" --->|
+import { createBdd } from 'playwright-bdd';
+import { expect, APIResponse } from '@playwright/test';
+
+const { When, Then } = createBdd();
+let response: APIResponse;
+let responseJson: any;
+
+When('I request GET {string}', async ({ request }, endpoint: string) => {
+  response = await request.get(endpoint);
+  responseJson = await response.json();
+});
+
+When('I send POST {string} with:', async ({ request }, endpoint: string, bodyStr: string) => {
+  response = await request.post(endpoint, { data: JSON.parse(bodyStr) });
+  responseJson = await response.json();
+});
+
+Then('the response status should be {int}', async ({}, status: number) => {
+  expect(response.status()).toBe(status);
+});
+
+Then('the post list should contain at least {int} item', async ({}, minCount: number) => {
+  expect(Array.isArray(responseJson)).toBeTruthy();
+  expect(responseJson.length).toBeGreaterThanOrEqual(minCount);
+});
+
+Then('the returned post should contain the title {string}', async ({}, title: string) => {
+  expect(responseJson.title).toBe(title);
+  expect(responseJson.id).toBeDefined();
+});
+
+Then('the user name should be {string}', async ({}, name: string) => {
+  expect(responseJson.name).toBe(name);
+});
+
+Then('the author username should be {string}', async ({}, username: string) => {
+  expect(responseJson.author.username).toBe(username);
+  expect(Array.isArray(responseJson.posts)).toBeTruthy();
+});
+
+|>--- FILE ---<|
+|>--- DIRECTORY ---<|
+|<--- DIRECTORY="Documents/DemoProjects/rest-assured_cucumber/" --->|
+|<--- FILE="pom.xml" --->|
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example.qa</groupId>
+    <artifactId>blog-api-tests</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <cucumber.version>7.18.0</cucumber.version>
+        <junit.jupiter.version>5.10.2</junit.jupiter.version>
+        <rest-assured.version>5.4.0</rest-assured.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <version>${rest-assured.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.cucumber</groupId>
+            <artifactId>cucumber-java</artifactId>
+            <version>${cucumber.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.cucumber</groupId>
+            <artifactId>cucumber-junit-platform-engine</artifactId>
+            <version>${cucumber.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-suite</artifactId>
+            <version>1.10.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+|>--- FILE ---<|
+|<--- FILE="src/test/resources/features/blog_api.feature" --->|
+Feature: Cross-platform Blog Service Verification
+
+  Scenario: Get all posts
+    Given the target service is available
+    When a GET request is dispatched to "/api/v1/posts"
+    Then the status code is 200
+    And the response collection size is greater than 0
+
+  Scenario: Verify 404 handler for missing post
+    Given the target service is available
+    When a GET request is dispatched to "/api/v1/posts/999999"
+    Then the status code is 404
+    And the json field "error" contains "NOT_FOUND"
+
+  Scenario: Create new post and verify persistence
+    Given the target service is available
+    When a POST request is sent to "/api/v1/posts/create" with payload:
+      """
+      {
+        "userId": 2,
+        "title": "Evaluator Spec Post",
+        "content": "This is valid content adhering to the 50 char minimum length constraint rule."
+      }
+      """
+    Then the status code is 200
+    And the json field "title" is equal to "Evaluator Spec Post"
+
+|>--- FILE ---<|
+|<--- FILE="src/test/java/com/example/qa/CucumberRunnerTest.java" --->|
+package com.example.qa;
+
+import org.junit.platform.suite.api.ConfigurationParameter;
+import org.junit.platform.suite.api.IncludeEngines;
+import org.junit.platform.suite.api.SelectClasspathResource;
+import org.junit.platform.suite.api.Suite;
+
+import static io.cucumber.junit.platform.engine.Constants.GLUE_PROPERTY_NAME;
+import static io.cucumber.junit.platform.engine.Constants.PLUGIN_PROPERTY_NAME;
+
+@Suite
+@IncludeEngines("cucumber")
+@SelectClasspathResource("features")
+@ConfigurationParameter(key = GLUE_PROPERTY_NAME, value = "com.example.qa")
+@ConfigurationParameter(key = PLUGIN_PROPERTY_NAME, value = "pretty, html:target/cucumber-report.html")
+public class CucumberRunnerTest {
+}
+|>--- FILE ---<|
+|<--- FILE="src/test/java/com/example/qa/StepDefinitions.java" --->|
+package com.example.qa;
+
+import io.cucumber.java.Before;
+import io.cucumber.java.en.Given;
+import io.cucumber.java.en.Then;
+import io.cucumber.java.en.When;
+import io.restassured.RestAssured;
+import io.restassured.http.ContentType;
+import io.restassured.response.Response;
+import io.restassured.specification.RequestSpecification;
+
+import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.*;
+
+public class StepDefinitions {
+
+    private Response response;
+    private RequestSpecification request;
+
+    @Before
+    public void setup() {
+        String port = System.getProperty("app.port", System.getenv().getOrDefault("APP_PORT", "8091"));
+        RestAssured.baseURI = "http://localhost:" + port;
+        request = given().contentType(ContentType.JSON);
+    }
+
+    @Given("the target service is available")
+    public void targetServiceAvailable() {
+        // Ready check
+    }
+
+    @When("a GET request is dispatched to {string}")
+    public void sendGet(String endpoint) {
+        response = request.when().get(endpoint);
+    }
+
+    @When("a POST request is sent to {string} with payload:")
+    public void sendPost(String endpoint, String jsonBody) {
+        response = request.body(jsonBody).when().post(endpoint);
+    }
+
+    @Then("the status code is {int}")
+    public void verifyStatusCode(int code) {
+        response.then().statusCode(code);
+    }
+
+    @Then("the response collection size is greater than {int}")
+    public void verifyCollectionSize(int size) {
+        response.then().body("size()", greaterThan(size));
+    }
+
+    @Then("the json field {string} contains {string}")
+    public void verifyJsonContains(String path, String expected) {
+        response.then().body(path, containsString(expected));
+    }
+
+    @Then("the json field {string} is equal to {string}")
+    public void verifyJsonEquals(String path, String expected) {
+        response.then().body(path, equalTo(expected));
+    }
+}
+|>--- FILE ---<|
+|>--- DIRECTORY ---<|

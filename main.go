@@ -32,6 +32,51 @@ const (
 	formatXML     docFormat = "xml"
 )
 
+// defaultIgnoredPaths lists operating-system metadata, IDE state, language
+// caches, and generated build artifacts that Documax never packs. Each name
+// applies at any depth in the source tree. Add project-specific exclusions to
+// .documax.ignore rather than widening this shared list.
+var defaultIgnoredPaths = []string{
+	".git",
+	".DS_Store",
+	".DS_STORE",
+	"Thumbs.db",
+	"ehthumbs.db",
+	"desktop.ini",
+	"Icon\\r",
+	"._*",
+	".Spotlight-V100",
+	".Trashes",
+	".fseventsd",
+	".idea",
+	".vscode",
+	".vs",
+	"__pycache__",
+	"__pylance__",
+	".pytest_cache",
+	".mypy_cache",
+	".ruff_cache",
+	".tox",
+	".nox",
+	".venv",
+	"venv",
+	"node_modules",
+	".gradle",
+	"target",
+	"build",
+	"dist",
+	"bin",
+	"obj",
+	"documax",
+	"documax.exe",
+	"*.test",
+	"*.out",
+	"coverage.out",
+	"*.swp",
+	"*.swo",
+	"*~",
+}
+
 var bracketTagRE = regexp.MustCompile(`\[DIR: ([^\]\r\n]+)\]|\[FILE: ([^\]\r\n]+)\]|\[/FILE\]|\[/DIR\]`)
 var xmlTagRE = regexp.MustCompile(`<d:dir\s+path="([^"]+)"\s*>|<d:file\s+path="([^"]+)"(?:\s+encoding="gzip\+base64")?\s*>|</d:file>|</d:dir>`)
 
@@ -62,7 +107,7 @@ type tag struct {
 
 func main() {
 	root := &cobra.Command{Use: "documax", Short: "Documax - multi-document packaging utility"}
-	root.AddCommand(packCmd(), unpackCmd(), validateCmd(), fixCmd(), minifyCmd(), expandCmd())
+	root.AddCommand(packCmd(), unpackCmd(), validateCmd(), fixCmd(), minifyCmd(), expandCmd(), validatePackUnpackCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -508,20 +553,25 @@ func runExpand(file, output string) error {
 func renderExpanded(doc document) []byte {
 	var out bytes.Buffer
 	for _, d := range doc.directories {
-		out.WriteString(directoryHeader(doc.format, d.path) + "\n")
+		out.WriteString(directoryHeader(doc.format, d.path))
+		out.WriteByte('\n')
 		for _, f := range d.files {
 			data, err := decodedContent(f)
 			if err != nil {
 				continue
 			}
 			body := string(data)
-			out.WriteString(fileHeader(doc.format, f.path, false) + "\n" + body)
+			out.WriteString(fileHeader(doc.format, f.path, false))
+			out.WriteByte('\n')
+			out.WriteString(body)
 			if !strings.HasSuffix(body, "\n") {
 				out.WriteByte('\n')
 			}
-			out.WriteString(fileEnd(doc.format) + "\n")
+			out.WriteString(fileEnd(doc.format))
+			out.WriteByte('\n')
 		}
-		out.WriteString(dirEnd(doc.format) + "\n")
+		out.WriteString(dirEnd(doc.format))
+		out.WriteByte('\n')
 	}
 	return out.Bytes()
 }
@@ -561,6 +611,12 @@ func runPackDir(ctx context.Context, source, output string, formats ...docFormat
 		}
 		rel, _ := filepath.Rel(abs, p)
 		rel = filepath.ToSlash(rel)
+		if isDefaultIgnored(rel) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if info.IsDir() {
 			dirs = append(dirs, rel)
 			if rel != "." && ignorer.Match(strings.Split(rel, "/"), true) {
@@ -652,6 +708,23 @@ func runPackDir(ctx context.Context, source, output string, formats ...docFormat
 		return err
 	}
 	return os.Rename(tmpName, outAbs)
+}
+
+func isDefaultIgnored(rel string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		for _, ignored := range defaultIgnoredPaths {
+			if part == ignored {
+				return true
+			}
+			if strings.ContainsAny(ignored, "*?[") {
+				matched, err := pathpkg.Match(ignored, part)
+				if err == nil && matched {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func runPackInteractive(ctx context.Context, scope, output string, formats ...docFormat) error {

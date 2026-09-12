@@ -122,3 +122,44 @@ func TestFixBracketDocument(t *testing.T) {
 		t.Fatalf("fixed document invalid: %s", strings.Join(errs, "; "))
 	}
 }
+
+func TestPackAlwaysExcludesGitMetadata(t *testing.T) {
+	source := t.TempDir()
+	output := filepath.Join(t.TempDir(), "archive.txt")
+	if err := os.MkdirAll(filepath.Join(source, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, ".idea"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, "target"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".git", "index"), []byte("git metadata"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".DS_Store"), []byte("finder metadata"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".idea", "workspace.xml"), []byte("ide metadata"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "target", "generated.txt"), []byte("build output"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "keep.txt"), []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPackDir(context.Background(), source, output); err != nil {
+		t.Fatal(err)
+	}
+	packed, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{".git/index", "git metadata", ".DS_Store", "finder metadata", ".idea/workspace.xml", "ide metadata", "target/generated.txt", "build output"} {
+		if bytes.Contains(packed, []byte(unwanted)) {
+			t.Fatalf("default-excluded path was packed: %s", unwanted)
+		}
+	}
+}

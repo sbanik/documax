@@ -5,6 +5,8 @@ repairs, minimizes, expands, or unpacks it later. It is a Go CLI designed for
 source code, configuration, Markdown, and other text files where whitespace
 and indentation matter.
 
+> For development-only commands, configure gopls with -tags=devtools.
+
 ## Build
 
 Requires Go 1.27 or later.
@@ -82,7 +84,10 @@ documax pack --dir ./my-project --format xml --output project.xml.txt
 
 Root-level `.gitignore` patterns are applied along with additional
 `.documax.ignore` patterns. `.documax.ignore` is excluded; `.gitignore`
-is retained. Packing first discovers eligible directories/files, then writes a
+is retained. Packing also always excludes common repository, operating-system,
+IDE, cache, and build output paths such as `.git`, `.DS_Store`, `.idea`,
+`.vscode`, `__pycache__`, `node_modules`, `target`, `build`, and
+`dist`. Packing first discovers eligible directories/files, then writes a
 temporary output and atomically publishes it on success.
 
 ### Pack pasted content
@@ -140,6 +145,18 @@ Phase two creates directories and atomically writes each file. Use
 The output directory itself may be absolute. Embedded document paths are
 normally restricted to safe relative paths. Use `--allow-absolute-paths`
 only for trusted documents that intentionally contain absolute paths.
+
+### Verify a pack/unpack round-trip
+
+~~~sh
+documax validate-pack-unpack --dir ./my-project
+~~~
+
+This creates a temporary archive and a temporary sibling unpack directory, then
+compares every directory and file that packing would include. It uses the same
+default exclusions and ignore files as pack, and compares file content
+byte-for-byte. Add --keep-artifacts to retain the archive and unpacked
+directory for inspection.
 
 ## Homebrew
 

@@ -1,4 +1,5 @@
-package main
+// Package documax implements the Documax CLI and document operations.
+package documax
 
 import (
 	"bufio"
@@ -105,20 +106,23 @@ type tag struct {
 	start, end, line     int
 }
 
-func main() {
+// NewRootCmd creates the Documax command-line application.
+func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{Use: "documax", Short: "Documax - multi-document packaging utility"}
-	root.AddCommand(packCmd(), unpackCmd(), validateCmd(), fixCmd(), minifyCmd(), expandCmd(), validatePackUnpackCmd())
-	if err := root.Execute(); err != nil {
-		os.Exit(1)
-	}
+	root.AddCommand(packCmd(), unpackCmd(), validateCmd(), fixCmd(), minifyCmd(), expandCmd())
+	addDevCommands(root)
+	return root
 }
 
 func packCmd() *cobra.Command {
 	var dir, output, format string
-	var interactive bool
+	var interactive, minimized bool
 	cmd := &cobra.Command{Use: "pack", RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, cancel := setupSignalContext()
 		defer cancel()
+		if minimized {
+			return runPackMinimized(ctx, dir, output, docFormat(format), interactive)
+		}
 		if interactive {
 			return runPackInteractive(ctx, dir, output, docFormat(format))
 		}
@@ -130,6 +134,7 @@ func packCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Directory to pack")
 	cmd.Flags().StringVarP(&output, "output", "o", DefaultDocFile, "Output Documax file path")
 	cmd.Flags().StringVarP(&format, "format", "f", string(formatBracket), "Output format: bracket or xml")
+	cmd.Flags().BoolVarP(&minimized, "minimize", "m", false, "Write a GZ+B64 minimized document directly")
 	cmd.Flags().BoolVar(&interactive, "from-clipboard", false, "Read pasted content until the content terminator")
 	return cmd
 }
@@ -584,6 +589,38 @@ func writeOutput(path string, data []byte) error {
 }
 
 type packItem struct{ rel, full string }
+
+func runPackMinimized(ctx context.Context, source, output string, format docFormat, interactive bool) error {
+	outputPath, err := filepath.Abs(output)
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(outputPath), ".documax-expanded-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(tempPath); err != nil {
+		return err
+	}
+	defer os.Remove(tempPath)
+
+	if interactive {
+		err = runPackInteractive(ctx, source, tempPath, format)
+	} else {
+		if source == "" {
+			return errors.New("missing --dir flag for directory packing")
+		}
+		err = runPackDir(ctx, source, tempPath, format)
+	}
+	if err != nil {
+		return err
+	}
+	return runMinify(tempPath, output)
+}
 
 func runPackDir(ctx context.Context, source, output string, formats ...docFormat) error {
 	format := formatBracket

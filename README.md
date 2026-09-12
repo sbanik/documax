@@ -15,7 +15,7 @@ Requires Go 1.27 or later.
 git clone https://github.com/YOUR_GITHUB_USERNAME/documax.git
 cd documax
 go test ./...
-go build -o documax .
+go build -o documax ./cmd/documax
 ```
 
 ## Formats
@@ -80,6 +80,7 @@ newlines survive a minimize/expand/unpack round-trip.
 ```sh
 documax pack --dir ./my-project --output project.documax.txt
 documax pack --dir ./my-project --format xml --output project.xml.txt
+documax pack --dir ./my-project --minimize --output project.min.txt
 ```
 
 Root-level `.gitignore` patterns are applied along with additional
@@ -89,6 +90,9 @@ IDE, cache, and build output paths such as `.git`, `.DS_Store`, `.idea`,
 `.vscode`, `__pycache__`, `node_modules`, `target`, `build`, and
 `dist`. Packing first discovers eligible directories/files, then writes a
 temporary output and atomically publishes it on success.
+
+Use `-m` or `--minimize` to write GZ+B64 output directly, without running a
+separate minimize command.
 
 ### Pack pasted content
 
@@ -131,11 +135,14 @@ Minification preserves the input document's bracket or XML syntax.
 ```sh
 documax unpack project.txt --dir ./restored
 documax unpack project.txt --dir ./restored --subpath d/e
+documax unpack project.min.txt --dir ./restored
 ```
 
 If no input filename is supplied, Documax uses `documax-output.txt` in the
 current directory. `--subpath c` matches any directory component named
 `c`; `--subpath d/e` matches that consecutive component sequence.
+Minimized GZ+B64 documents unpack directly; an explicit expand step is not
+required.
 
 Unpack validates first. If validation fails it prints diagnostics, tries safe
 in-memory repairs, validates again, then creates a complete phase-one plan.
@@ -148,11 +155,14 @@ only for trusted documents that intentionally contain absolute paths.
 
 ### Verify a pack/unpack round-trip
 
+This is a development-only command and is excluded from normal/Homebrew
+builds. Run it with the devtools build tag:
+
 ~~~sh
-documax validate-pack-unpack --dir ./my-project
+go run -tags=devtools ./cmd/documax validate-pack-unpack --dir ./my-project
 ~~~
 
-This creates a temporary archive and a temporary sibling unpack directory, then
+It creates a temporary archive and a temporary sibling unpack directory, then
 compares every directory and file that packing would include. It uses the same
 default exclusions and ignore files as pack, and compares file content
 byte-for-byte. Add --keep-artifacts to retain the archive and unpacked
@@ -174,7 +184,7 @@ class Documax < Formula
   depends_on "go" => :build
 
   def install
-    system "go", "build", *std_go_args(output: bin/"documax"), "."
+    system "go", "build", *std_go_args(output: bin/"documax"), "./cmd/documax"
   end
 
   test do
@@ -203,7 +213,7 @@ and [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook).
 ## Development
 
 ```sh
-gofmt -w main.go main_test.go
+gofmt -w cmd/documax/main.go internal/documax/*.go
 go test ./...
 ```
 

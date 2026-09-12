@@ -1,4 +1,4 @@
-package main
+package documax
 
 import (
 	"bytes"
@@ -44,6 +44,24 @@ func TestGzipBase64RoundTripPreservesPythonBytes(t *testing.T) {
 	}
 }
 
+func TestPackMinimizedDirectly(t *testing.T) {
+	source := t.TempDir()
+	output := filepath.Join(t.TempDir(), "archive.min.txt")
+	if err := os.WriteFile(filepath.Join(source, "main.py"), []byte("if True:\n    print('packed')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPackMinimized(context.Background(), source, output, formatBracket, false); err != nil {
+		t.Fatal(err)
+	}
+	packed, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(packed, []byte(";ENC=GZ+B64]")) {
+		t.Fatalf("direct pack did not minimize output: %s", packed)
+	}
+}
+
 func TestXMLPackingExpansionAndUnpacking(t *testing.T) {
 	source := t.TempDir()
 	target := t.TempDir()
@@ -69,6 +87,7 @@ func TestXMLPackingExpansionAndUnpacking(t *testing.T) {
 	}
 	minimized := filepath.Join(t.TempDir(), "archive.min.xml.txt")
 	expanded := filepath.Join(t.TempDir(), "archive.expanded.xml.txt")
+	minimizedTarget := t.TempDir()
 	if err := runMinify(output, minimized); err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +100,16 @@ func TestXMLPackingExpansionAndUnpacking(t *testing.T) {
 	}
 	if !bytes.Contains(expandedBytes, []byte("<d:file path=\"src/app.py\">")) {
 		t.Fatalf("XML expansion changed the syntax: %s", expandedBytes)
+	}
+	if err := runUnpack(context.Background(), minimized, minimizedTarget, ""); err != nil {
+		t.Fatal(err)
+	}
+	minimizedRoundTrip, err := os.ReadFile(filepath.Join(minimizedTarget, filepath.Base(source), "src", "app.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(minimizedRoundTrip) != "if True:\n    print('xml')\n" {
+		t.Fatalf("direct minimized unpack changed content: %q", minimizedRoundTrip)
 	}
 	if err := runUnpack(context.Background(), output, target, ""); err != nil {
 		t.Fatal(err)

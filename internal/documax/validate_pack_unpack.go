@@ -1,6 +1,6 @@
 //go:build devtools
 
-package main
+package documax
 
 import (
 	"bytes"
@@ -18,6 +18,10 @@ import (
 // validatePackUnpackCmd verifies that packing and unpacking a directory
 // reproduces every packable directory and file. Temporary artifacts are
 // siblings of the source directory, never children of it.
+func addDevCommands(root *cobra.Command) {
+	root.AddCommand(validatePackUnpackCmd())
+}
+
 func validatePackUnpackCmd() *cobra.Command {
 	var source string
 	var keepArtifacts bool

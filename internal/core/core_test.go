@@ -86,7 +86,7 @@ func TestPackMinimizedDirectly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "main.py"), []byte("if True:\n    print('packed')\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := runPackMinimized(context.Background(), source, output, formatBracket, false); err != nil {
+	if err := PackMinimized(context.Background(), source, output, "bracket", false); err != nil {
 		t.Fatal(err)
 	}
 	packed, err := os.ReadFile(output)
@@ -96,6 +96,42 @@ func TestPackMinimizedDirectly(t *testing.T) {
 	if !bytes.Contains(packed, []byte(";ENC=GZ+B64]")) {
 		t.Fatalf("direct pack did not minimize output: %s", packed)
 	}
+}
+
+func TestPublicCoreOperations(t *testing.T) {
+	source := t.TempDir()
+	archive := filepath.Join(t.TempDir(), "archive.md")
+	restored := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "main.py"), []byte("if True:\n    print('ok')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PackDirectory(context.Background(), source, archive, "bracket"); err != nil {
+		t.Fatal(err)
+	}
+	if valid, diagnostics := ValidateFile(archive); !valid {
+		t.Fatalf("ValidateFile() diagnostics = %v", diagnostics)
+	}
+	if err := MinimizeFile(archive, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExpandFile(archive, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unpack(context.Background(), archive, restored, "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(restored, filepath.Base(source), "main.py")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := CollectPackableTree(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := entries["main.py"]; !ok {
+		t.Fatalf("CollectPackableTree() omitted main.py")
+	}
+	_, cancel := NewSignalContext()
+	cancel()
 }
 
 func TestPackEncodesPayloadContainingStructuralTags(t *testing.T) {

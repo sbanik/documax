@@ -488,6 +488,9 @@ func runPackMinimized(ctx context.Context, source, output string, format docForm
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return err
+	}
 	temp, err := os.CreateTemp(filepath.Dir(outputPath), ".documax-expanded-*")
 	if err != nil {
 		return err
@@ -527,12 +530,22 @@ func runPackDir(ctx context.Context, source, output string, formats ...docFormat
 	if err != nil {
 		return err
 	}
+	outAbs, err := filepath.Abs(output)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(outAbs), 0755); err != nil {
+		return err
+	}
 	ignorer := buildGitIgnore(abs)
 	var files []packItem
 	var dirs []string
 	err = filepath.Walk(abs, func(p string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if p == outAbs {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -583,10 +596,6 @@ func runPackDir(ctx context.Context, source, output string, formats ...docFormat
 		}
 	}
 	fmt.Printf("Phase 1 complete: directories %d/%d, files %d/%d\n", len(dirs), len(dirs), len(files), len(files))
-	outAbs, err := filepath.Abs(output)
-	if err != nil {
-		return err
-	}
 	tmp, err := os.CreateTemp(filepath.Dir(outAbs), ".documax-pack-*")
 	if err != nil {
 		return err
@@ -757,6 +766,9 @@ func runPackInteractive(ctx context.Context, scope, output string, formats ...do
 			continue
 		}
 		doc.directories[0].files = append(doc.directories[0].files, docFile{path: filepath.ToSlash(p), content: []byte(body.String())})
+	}
+	if err := os.MkdirAll(filepath.Dir(output), 0755); err != nil {
+		return err
 	}
 	return os.WriteFile(output, renderExpanded(doc), 0644)
 }

@@ -83,10 +83,21 @@ newlines survive a minimize/expand/unpack round-trip.
 ### Pack
 
 ```sh
-documax pack --dir ./my-project --output project.documax.txt
-documax pack --dir ./my-project --format xml --output project.xml.txt
-documax pack --dir ./my-project --minimized --output project.min.txt
+documax pack
+documax pack --format xml
+documax pack --dir ./my-project
+documax pack --dir ./my-project --output ./archives/
+documax pack --dir ./my-project --output ./archives/project.txt
 ```
+
+Without flags, `pack` packages the current directory as `documax-output.md`
+(`documax-output.xml` for `--format xml`). With `--dir` and no output path,
+the output is `<selected-directory>-documax.md` or `.xml` in the current
+directory; spaces in the selected directory name become dashes. An output
+path with no extension is treated as a directory and receives
+`<selected-directory>/documax-output.md` or `.xml`. An output path ending in
+`.md`, `.xml`, or `.txt` is used as the exact filename. A non-empty existing
+output file requires an overwrite confirmation.
 
 Root-level `.gitignore` patterns are applied along with additional
 `.documax.ignore` patterns. `.documax.ignore` is excluded; `.gitignore`
@@ -131,9 +142,14 @@ closing tags before directory transitions or at EOF.
 ```sh
 documax minimize project.txt --output project.min.txt
 documax expand project.min.txt --output project.expanded.txt
+documax minimize
+documax expand
 ```
 
 Minification preserves the input document's bracket or XML syntax.
+Without a filepath, each command looks for exactly one of
+`documax-output.md` and `documax-output.xml` in the current directory. It
+errors if neither—or both—exist.
 
 ### Unpack
 
@@ -143,9 +159,10 @@ documax unpack project.txt --dir ./restored --subpath d/e
 documax unpack project.min.txt --dir ./restored
 ```
 
-If no input filename is supplied, Documax uses `documax-output.txt` in the
-current directory. `--subpath c` matches any directory component named
-`c`; `--subpath d/e` matches that consecutive component sequence.
+If no input filename is supplied, Documax looks for exactly one of
+`documax-output.md` and `documax-output.xml` in the current directory. It
+errors if neither—or both—exist. `--subpath c` matches any directory component
+named `c`; `--subpath d/e` matches that consecutive component sequence.
 Minimized GZ+B64 documents unpack directly; an explicit expand step is not
 required.
 

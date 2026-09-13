@@ -2,7 +2,7 @@ GO ?= go
 BINARY ?= documax
 ARGS ?=
 
-.PHONY: help build test test-devtools devtools validate pack pack-minimized unpack minimize expand fix
+.PHONY: help build test test-race coverage test-devtools devtools validate pack pack-minimized unpack minimize expand fix
 
 help:
 	@echo "Documax development commands"
@@ -13,9 +13,13 @@ help:
 	@echo "      Build ./$(BINARY) from ./cmd/documax."
 	@echo "  make test"
 	@echo "      Run all tests."
-	@echo "  make pack ARGS='--dir ./my-project --output project.txt --format xml'"
+	@echo "  make test-race"
+	@echo "      Run all tests with Go's race detector."
+	@echo "  make coverage"
+	@echo "      Report coverage for the application packages."
+	@echo "  make pack ARGS='./my-project --format xml'"
 	@echo "      Pass ARGS to: documax pack"
-	@echo "  make pack-minimized ARGS='--dir ./my-project --output project.min.txt'"
+	@echo "  make pack-minimized ARGS='./my-project --output project.min.txt'"
 	@echo "      Pass ARGS to: documax pack --minimized"
 	@echo "  make unpack ARGS='project.min.txt --dir ./restored --subpath d/e'"
 	@echo "      Pass ARGS to: documax unpack"
@@ -39,6 +43,15 @@ test:
 	@echo "Running Documax tests..."
 	@$(GO) test ./...
 	@echo "Tests passed."
+
+test-race:
+	@echo "Running Documax tests with the race detector..."
+	@$(GO) test -race ./...
+	@echo "Race-detector tests passed."
+
+coverage:
+	@echo "Reporting Documax application-package coverage..."
+	@$(GO) test -cover ./internal/core ./internal/devtools ./internal/documax
 
 test-devtools:
 	@echo "Running Documax and developer-tool tests..."

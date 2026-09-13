@@ -2,9 +2,13 @@
 package documax
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"documax/internal/core"
 
@@ -21,22 +25,40 @@ func NewRootCmd() *cobra.Command {
 func packCmd() *cobra.Command {
 	var dir, output, format string
 	var interactive, minimized bool
-	cmd := &cobra.Command{Use: "pack", Short: "Package a directory into a Documax document", RunE: func(_ *cobra.Command, _ []string) error {
+	cmd := &cobra.Command{Use: "pack [directory]", Short: "Package a directory into a Documax document", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if format != "bracket" && format != "xml" {
+			return errors.New("format must be bracket or xml")
+		}
+		directoryProvided := cmd.Flags().Changed("dir")
+		if len(args) == 1 {
+			if cmd.Flags().Changed("dir") {
+				return errors.New("provide the directory either as an argument or with --dir, not both")
+			}
+			dir = args[0]
+			directoryProvided = true
+		}
+		if dir == "" && !interactive {
+			dir, _ = os.Getwd()
+		}
+		resolvedOutput, err := resolvePackOutput(dir, output, format, !directoryProvided)
+		if err != nil {
+			return err
+		}
+		if err := confirmPackOverwrite(resolvedOutput); err != nil {
+			return err
+		}
 		ctx, cancel := core.NewSignalContext()
 		defer cancel()
 		if minimized {
-			return core.PackMinimized(ctx, dir, output, format, interactive)
+			return core.PackMinimized(ctx, dir, resolvedOutput, format, interactive)
 		}
 		if interactive {
-			return core.PackInteractive(ctx, dir, output, format)
+			return core.PackInteractive(ctx, dir, resolvedOutput, format)
 		}
-		if dir == "" {
-			return errors.New("missing --dir flag for directory packing")
-		}
-		return core.PackDirectory(ctx, dir, output, format)
+		return core.PackDirectory(ctx, dir, resolvedOutput, format)
 	}}
 	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Directory to pack")
-	cmd.Flags().StringVarP(&output, "output", "o", core.DefaultDocFile, "Output Documax file path")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file path or output directory")
 	cmd.Flags().StringVarP(&format, "format", "f", "bracket", "Output format: bracket or xml")
 	cmd.Flags().BoolVarP(&minimized, "minimized", "m", false, "Write a GZ+B64 minimized document directly")
 	cmd.Flags().BoolVar(&interactive, "from-clipboard", false, "Read pasted content until the content terminator")
@@ -53,9 +75,9 @@ func unpackCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			ctx, cancel := core.NewSignalContext()
 			defer cancel()
-			input := core.DefaultDocFile
-			if len(args) == 1 {
-				input = args[0]
+			input, err := resolveDocumentInput(args)
+			if err != nil {
+				return err
 			}
 			if _, err := os.Stat(input); err != nil {
 				return fmt.Errorf("cannot read %q: %w", input, err)
@@ -95,14 +117,112 @@ func fixCmd() *cobra.Command {
 
 func minimizeCmd() *cobra.Command {
 	var output string
-	cmd := &cobra.Command{Use: "minimize <documax-file>", Short: "Compress file payloads as GZ+B64", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return core.MinimizeFile(args[0], output) }}
+	cmd := &cobra.Command{Use: "minimize [documax-file]", Short: "Compress file payloads as GZ+B64", Args: cobra.MaximumNArgs(1), RunE: func(_ *cobra.Command, args []string) error {
+		input, err := resolveDocumentInput(args)
+		if err != nil {
+			return err
+		}
+		return core.MinimizeFile(input, output)
+	}}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to overwriting the input)")
 	return cmd
 }
 
 func expandCmd() *cobra.Command {
 	var output string
-	cmd := &cobra.Command{Use: "expand <documax-file>", Short: "Decode GZ+B64 payloads into readable source", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return core.ExpandFile(args[0], output) }}
+	cmd := &cobra.Command{Use: "expand [documax-file]", Short: "Decode GZ+B64 payloads into readable source", Args: cobra.MaximumNArgs(1), RunE: func(_ *cobra.Command, args []string) error {
+		input, err := resolveDocumentInput(args)
+		if err != nil {
+			return err
+		}
+		return core.ExpandFile(input, output)
+	}}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to overwriting the input)")
 	return cmd
+}
+
+func resolveDocumentInput(args []string) (string, error) {
+	if len(args) == 1 {
+		if _, err := os.Stat(args[0]); err != nil {
+			return "", fmt.Errorf("cannot read %q: %w", args[0], err)
+		}
+		return args[0], nil
+	}
+	markdown, xml := "documax-output.md", "documax-output.xml"
+	markdownExists := fileExists(markdown)
+	xmlExists := fileExists(xml)
+	switch {
+	case markdownExists && xmlExists:
+		return "", fmt.Errorf("both %q and %q were found; provide an explicit document filepath", markdown, xml)
+	case markdownExists:
+		return markdown, nil
+	case xmlExists:
+		return xml, nil
+	default:
+		return "", fmt.Errorf("could not find %q or %q; provide an explicit document filepath", markdown, xml)
+	}
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func resolvePackOutput(source, requested, format string, currentDirectoryDefault bool) (string, error) {
+	extension := ".md"
+	if format == "xml" {
+		extension = ".xml"
+	}
+	if requested == "" {
+		if currentDirectoryDefault {
+			return "documax-output" + extension, nil
+		}
+		return selectedDirectoryName(source) + "-documax" + extension, nil
+	}
+	if ext := filepath.Ext(requested); ext != "" {
+		switch strings.ToLower(ext) {
+		case ".md", ".xml", ".txt":
+			return requested, nil
+		default:
+			return "", fmt.Errorf("unsupported output extension %q: expected .md, .xml, or .txt", ext)
+		}
+	}
+	return filepath.Join(requested, selectedDirectoryName(source), "documax-output"+extension), nil
+}
+
+func selectedDirectoryName(source string) string {
+	name := filepath.Base(filepath.Clean(source))
+	return strings.ReplaceAll(name, " ", "-")
+}
+
+func confirmPackOverwrite(output string) error {
+	return confirmPackOverwriteWithReader(output, os.Stdin, os.Stderr)
+}
+
+func confirmPackOverwriteWithReader(output string, input io.Reader, prompt io.Writer) error {
+	info, err := os.Stat(output)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("output path %q is a directory", output)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(prompt, "Output file %q already exists and is not empty. Overwrite? [y/N]: ", output); err != nil {
+		return err
+	}
+	answer, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && len(answer) == 0 {
+		return fmt.Errorf("refusing to overwrite %q without confirmation", output)
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer != "y" && answer != "yes" {
+		return fmt.Errorf("pack cancelled; %q was not overwritten", output)
+	}
+	return nil
 }

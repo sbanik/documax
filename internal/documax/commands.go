@@ -38,7 +38,7 @@ func packCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Directory to pack")
 	cmd.Flags().StringVarP(&output, "output", "o", core.DefaultDocFile, "Output Documax file path")
 	cmd.Flags().StringVarP(&format, "format", "f", "bracket", "Output format: bracket or xml")
-	cmd.Flags().BoolVarP(&minimized, "minimize", "m", false, "Write a GZ+B64 minimized document directly")
+	cmd.Flags().BoolVarP(&minimized, "minimized", "m", false, "Write a GZ+B64 minimized document directly")
 	cmd.Flags().BoolVar(&interactive, "from-clipboard", false, "Read pasted content until the content terminator")
 	return cmd
 }
@@ -46,21 +46,25 @@ func packCmd() *cobra.Command {
 func unpackCmd() *cobra.Command {
 	var dir, subpath string
 	var allowAbsolute, fixInPlace bool
-	cmd := &cobra.Command{Use: "unpack [documax-file]", Short: "Extract files and directories from a Documax document", Args: cobra.MaximumNArgs(1), RunE: func(_ *cobra.Command, args []string) error {
-		ctx, cancel := core.NewSignalContext()
-		defer cancel()
-		input := core.DefaultDocFile
-		if len(args) == 1 {
-			input = args[0]
-		}
-		if _, err := os.Stat(input); err != nil {
-			return fmt.Errorf("cannot read %q: %w", input, err)
-		}
-		if dir == "" {
-			dir, _ = os.Getwd()
-		}
-		return core.Unpack(ctx, input, dir, subpath, allowAbsolute, fixInPlace)
-	}}
+	cmd := &cobra.Command{
+		Use:   "unpack [documax-file]",
+		Short: "Extract files and directories from a Documax document",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ctx, cancel := core.NewSignalContext()
+			defer cancel()
+			input := core.DefaultDocFile
+			if len(args) == 1 {
+				input = args[0]
+			}
+			if _, err := os.Stat(input); err != nil {
+				return fmt.Errorf("cannot read %q: %w", input, err)
+			}
+			if dir == "" {
+				dir, _ = os.Getwd()
+			}
+			return core.Unpack(ctx, input, dir, subpath, allowAbsolute, fixInPlace)
+		}}
 	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Target root directory")
 	cmd.Flags().StringVarP(&subpath, "subpath", "s", "", "Directory subpath to extract")
 	cmd.Flags().BoolVar(&allowAbsolute, "allow-absolute-paths", false, "Allow absolute paths embedded in the document")
@@ -92,13 +96,13 @@ func fixCmd() *cobra.Command {
 func minimizeCmd() *cobra.Command {
 	var output string
 	cmd := &cobra.Command{Use: "minimize <documax-file>", Short: "Compress file payloads as GZ+B64", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return core.MinimizeFile(args[0], output) }}
-	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to stdout)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to overwriting the input)")
 	return cmd
 }
 
 func expandCmd() *cobra.Command {
 	var output string
 	cmd := &cobra.Command{Use: "expand <documax-file>", Short: "Decode GZ+B64 payloads into readable source", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return core.ExpandFile(args[0], output) }}
-	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to stdout)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to overwriting the input)")
 	return cmd
 }

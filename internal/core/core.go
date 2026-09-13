@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 	pathpkg "path"
@@ -403,6 +404,9 @@ func runMinify(file, output string) error {
 		}
 		out.WriteString(dirEnd(doc.format))
 	}
+	if output == "" {
+		output = file
+	}
 	return writeOutput(output, out.Bytes())
 }
 func runExpand(file, output string) error {
@@ -414,6 +418,9 @@ func runExpand(file, output string) error {
 	if len(ds) > 0 {
 		printDiagnostics(file, ds)
 		return errors.New("cannot expand an invalid document")
+	}
+	if output == "" {
+		output = file
 	}
 	return writeOutput(output, renderExpanded(doc))
 }
@@ -450,11 +457,30 @@ func renderExpanded(doc document) []byte {
 	return out.Bytes()
 }
 func writeOutput(path string, data []byte) error {
-	if path == "" {
-		_, err := os.Stdout.Write(data)
+	perm := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	temp, err := os.CreateTemp(filepath.Dir(path), ".documax-output-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if err := temp.Chmod(perm); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }
 
 func runPackMinimized(ctx context.Context, source, output string, format docFormat, interactive bool) error {
@@ -910,6 +936,9 @@ func buildGitIgnore(base string) gitignore.Matcher {
 			continue
 		}
 		sc := bufio.NewScanner(f)
+		if err := sc.Err(); err != nil {
+			log.Panicf("error in building git ignore: %v", err)
+		}
 		for sc.Scan() {
 			s := strings.TrimSpace(sc.Text())
 			if s != "" && !strings.HasPrefix(s, "#") {

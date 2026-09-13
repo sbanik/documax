@@ -1,31 +1,34 @@
 GO ?= go
 BINARY ?= documax
-DIR ?=
-OUTPUT ?= documax-output.txt
-INPUT ?= $(OUTPUT)
-UNPACK_DIR ?= ./restored
-FORMAT ?= bracket
-SUBPATH ?=
+ARGS ?=
 
-.PHONY: help build test test-devtools validate pack pack-minimized unpack devtools
+.PHONY: help build test test-devtools devtools validate pack pack-minimized unpack minimize expand fix
 
 help:
 	@echo "Documax development commands"
 	@echo ""
+	@echo "Pass any CLI flags and positional arguments through ARGS."
+	@echo ""
 	@echo "  make build"
 	@echo "      Build ./$(BINARY) from ./cmd/documax."
 	@echo "  make test"
-	@echo "      Run the normal test suite."
-	@echo "  make devtools [DIR=/path/to/project]"
-	@echo "      Run devtools tests, or validate a pack/unpack round-trip when DIR is set."
-	@echo "  make validate INPUT=archive.txt"
-	@echo "      Validate a bracket or XML Documax document."
-	@echo "  make pack DIR=/path/to/project OUTPUT=project.txt [FORMAT=xml]"
-	@echo "      Pack a directory as an expanded document."
-	@echo "  make pack-minimized DIR=/path/to/project OUTPUT=project.min.txt [FORMAT=xml]"
-	@echo "      Pack a directory directly as a GZ+B64 minimized document."
-	@echo "  make unpack INPUT=project.min.txt UNPACK_DIR=./restored [SUBPATH=d/e]"
-	@echo "      Unpack an expanded or minimized document."
+	@echo "      Run all tests."
+	@echo "  make pack ARGS='--dir ./my-project --output project.txt --format xml'"
+	@echo "      Pass ARGS to: documax pack"
+	@echo "  make pack-minimized ARGS='--dir ./my-project --output project.min.txt'"
+	@echo "      Pass ARGS to: documax pack --minimized"
+	@echo "  make unpack ARGS='project.min.txt --dir ./restored --subpath d/e'"
+	@echo "      Pass ARGS to: documax unpack"
+	@echo "  make validate ARGS='project.txt'"
+	@echo "      Pass ARGS to: documax validate"
+	@echo "  make fix ARGS='project.txt --in-place'"
+	@echo "      Pass ARGS to: documax fix"
+	@echo "  make minimize ARGS='project.txt --output project.min.txt'"
+	@echo "      Pass ARGS to: documax minimize"
+	@echo "  make expand ARGS='project.min.txt --output project.txt'"
+	@echo "      Pass ARGS to: documax expand"
+	@echo "  make devtools ARGS='--dir ./my-project'"
+	@echo "      Pass ARGS to: documax-dev validate-pack-unpack"
 
 build:
 	@echo "Building ./$(BINARY) from ./cmd/documax..."
@@ -33,44 +36,51 @@ build:
 	@echo "Build complete: ./$(BINARY)"
 
 test:
-	@echo "Running normal Documax tests..."
+	@echo "Running Documax tests..."
 	@$(GO) test ./...
-	@echo "Normal tests passed."
-
-devtools:
-	@if [ -n "$(DIR)" ]; then \
-		echo "Running development pack/unpack validation for $(DIR)..."; \
-		$(GO) run ./cmd/documax-dev validate-pack-unpack --dir "$(DIR)"; \
-	else \
-		echo "Running Documax and developer-tool tests..."; \
-		$(GO) test -v ./...; \
-	fi
-	@echo "Development task passed."
+	@echo "Tests passed."
 
 test-devtools:
-	@$(MAKE) devtools
+	@echo "Running Documax and developer-tool tests..."
+	@$(GO) test -v ./...
+	@echo "Developer-tool tests passed."
 
-validate: build
-	@echo "Validating $(INPUT)..."
-	@./$(BINARY) validate "$(INPUT)"
-	@echo "Validation passed: $(INPUT)"
+devtools:
+	@echo "Running documax-dev validate-pack-unpack $(ARGS)..."
+	@$(GO) run ./cmd/documax-dev validate-pack-unpack $(ARGS)
+	@echo "Development pack/unpack validation passed."
 
-pack: build
-	@echo "Packing $(DIR) as an expanded $(FORMAT) document..."
-	@./$(BINARY) pack --dir "$(DIR)" --output "$(OUTPUT)" --format "$(FORMAT)"
-	@echo "Pack complete: $(OUTPUT)"
+validate:
+	@echo "Running documax validate $(ARGS)..."
+	@$(GO) run ./cmd/documax validate $(ARGS)
+	@echo "Validation passed."
 
-pack-minimized: build
-	@echo "Packing $(DIR) directly as a minimized $(FORMAT) document..."
-	@./$(BINARY) pack --dir "$(DIR)" --output "$(OUTPUT)" --format "$(FORMAT)" --minimize
-	@echo "Minimized pack complete: $(OUTPUT)"
+pack:
+	@echo "Running documax pack $(ARGS)..."
+	@$(GO) run ./cmd/documax pack $(ARGS)
+	@echo "Pack complete."
 
-unpack: build
-	@echo "Unpacking $(INPUT) into $(UNPACK_DIR)..."
-	@if [ -n "$(SUBPATH)" ]; then \
-		./$(BINARY) unpack "$(INPUT)" --dir "$(UNPACK_DIR)" --subpath "$(SUBPATH)"; \
-	else \
-		./$(BINARY) unpack "$(INPUT)" --dir "$(UNPACK_DIR)"; \
-	fi
-	@echo "Unpack complete: $(UNPACK_DIR)"
-	
+pack-minimized:
+	@echo "Running documax pack --minimized $(ARGS)..."
+	@$(GO) run ./cmd/documax pack --minimized $(ARGS)
+	@echo "Minimized pack complete."
+
+unpack:
+	@echo "Running documax unpack $(ARGS)..."
+	@$(GO) run ./cmd/documax unpack $(ARGS)
+	@echo "Unpack complete."
+
+minimize:
+	@echo "Running documax minimize $(ARGS)..."
+	@$(GO) run ./cmd/documax minimize $(ARGS)
+	@echo "Minimize complete."
+
+expand:
+	@echo "Running documax expand $(ARGS)..."
+	@$(GO) run ./cmd/documax expand $(ARGS)
+	@echo "Expand complete."
+
+fix:
+	@echo "Running documax fix $(ARGS)..."
+	@$(GO) run ./cmd/documax fix $(ARGS)
+	@echo "Fix complete."

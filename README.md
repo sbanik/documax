@@ -75,6 +75,9 @@ The XML equivalent is:
 operate on bytes, Python indentation, YAML spacing, blank lines, and final
 newlines survive a minimize/expand/unpack round-trip.
 
+`minimize` and `expand` overwrite their input document by default. Use
+`-o` or `--output` to write the transformed document to a separate file.
+
 ## Commands
 
 ### Pack
@@ -82,7 +85,7 @@ newlines survive a minimize/expand/unpack round-trip.
 ```sh
 documax pack --dir ./my-project --output project.documax.txt
 documax pack --dir ./my-project --format xml --output project.xml.txt
-documax pack --dir ./my-project --minimize --output project.min.txt
+documax pack --dir ./my-project --minimized --output project.min.txt
 ```
 
 Root-level `.gitignore` patterns are applied along with additional
@@ -93,7 +96,7 @@ IDE, cache, and build output paths such as `.git`, `.DS_Store`, `.idea`,
 `dist`. Packing first discovers eligible directories/files, then writes a
 temporary output and atomically publishes it on success.
 
-Use `-m` or `--minimize` to write GZ+B64 output directly, without running a
+Use `-m` or `--minimized` to write GZ+B64 output directly, without running a
 separate minimize command.
 
 ### Pack pasted content
@@ -102,7 +105,7 @@ separate minimize command.
 documax pack --from-clipboard --dir project/ --output project.txt
 ```
 
-Enter a relative path, paste content, then enter `|>--- CONTENT ---<|` on its
+Enter a relative path, paste content, then enter `CONTENT` on its
 own line. Blank lines are preserved. An empty path ends the session; empty
 content skips that pending file.
 

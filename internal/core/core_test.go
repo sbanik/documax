@@ -44,6 +44,42 @@ func TestGzipBase64RoundTripPreservesPythonBytes(t *testing.T) {
 	}
 }
 
+func TestMinimizeAndExpandOverwriteInputByDefault(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "archive.txt")
+	payload := "def greet():\n    print('hello')\n"
+	document := "[DIR: project/]\n[FILE: src/main.py]\n" + payload + "[/FILE]\n[/DIR]\n"
+	if err := os.WriteFile(file, []byte(document), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := runMinify(file, ""); err != nil {
+		t.Fatal(err)
+	}
+	minimized, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(minimized, []byte(";ENC=GZ+B64]")) {
+		t.Fatalf("input was not minimized: %s", minimized)
+	}
+	if err := runExpand(file, ""); err != nil {
+		t.Fatal(err)
+	}
+	expanded, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(expanded, []byte(payload)) {
+		t.Fatalf("input was not expanded: %s", expanded)
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0640 {
+		t.Fatalf("file permissions changed: got %o, want 640", got)
+	}
+}
+
 func TestPackMinimizedDirectly(t *testing.T) {
 	source := t.TempDir()
 	output := filepath.Join(t.TempDir(), "archive.min.txt")

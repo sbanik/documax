@@ -1,6 +1,5 @@
-//go:build devtools
-
-package documax
+// Package devtools provides development-only Documax verification commands.
+package devtools
 
 import (
 	"bytes"
@@ -10,16 +9,17 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
+
+	"documax/internal/core"
 
 	"github.com/spf13/cobra"
 )
 
-// validatePackUnpackCmd verifies that packing and unpacking a directory
-// reproduces every packable directory and file. Temporary artifacts are
-// siblings of the source directory, never children of it.
-func addDevCommands(root *cobra.Command) {
+// NewRootCmd creates the developer-only command-line application.
+func NewRootCmd() *cobra.Command {
+	root := &cobra.Command{Use: "documax-dev", Short: "Documax developer tools"}
 	root.AddCommand(validatePackUnpackCmd())
+	return root
 }
 
 func validatePackUnpackCmd() *cobra.Command {
@@ -33,7 +33,7 @@ func validatePackUnpackCmd() *cobra.Command {
 			if source == "" {
 				return errors.New("missing --dir flag")
 			}
-			ctx, cancel := setupSignalContext()
+			ctx, cancel := core.NewSignalContext()
 			defer cancel()
 			return runValidatePackUnpack(ctx, source, keepArtifacts)
 		},
@@ -75,20 +75,20 @@ func runValidatePackUnpack(ctx context.Context, source string, keepArtifacts boo
 		return err
 	}
 	if !keepArtifacts {
-		defer os.Remove(archivePath)
-		defer os.RemoveAll(unpackRoot)
+		defer func() { _ = os.Remove(archivePath) }()
+		defer func() { _ = os.RemoveAll(unpackRoot) }()
 	}
 
 	fmt.Printf("Packing %s into %s\n", absSource, archivePath)
-	if err := runPackDir(ctx, absSource, archivePath); err != nil {
+	if err := core.PackDirectory(ctx, absSource, archivePath, "bracket"); err != nil {
 		return err
 	}
 	fmt.Printf("Unpacking into %s\n", unpackRoot)
-	if err := runUnpack(ctx, archivePath, unpackRoot, ""); err != nil {
+	if err := core.Unpack(ctx, archivePath, unpackRoot, "", false, false); err != nil {
 		return err
 	}
 
-	expected, err := collectPackableTree(absSource)
+	expected, err := core.CollectPackableTree(absSource)
 	if err != nil {
 		return err
 	}
@@ -117,13 +117,8 @@ func runValidatePackUnpack(ctx context.Context, source string, keepArtifacts boo
 	return nil
 }
 
-type treeEntry struct {
-	isDir bool
-}
-
-func collectPackableTree(root string) (map[string]treeEntry, error) {
-	ignorer := buildGitIgnore(root)
-	entries := map[string]treeEntry{}
+func collectActualTree(root string) (map[string]core.TreeEntry, error) {
+	entries := map[string]core.TreeEntry{}
 	err := filepath.Walk(root, func(current string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -132,49 +127,13 @@ func collectPackableTree(root string) (map[string]treeEntry, error) {
 		if err != nil {
 			return err
 		}
-		rel = filepath.ToSlash(rel)
-		if isDefaultIgnored(rel) {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if info.IsDir() {
-			if rel != "." && ignorer.Match(strings.Split(rel, "/"), true) {
-				return filepath.SkipDir
-			}
-			entries[rel] = treeEntry{isDir: true}
-			return nil
-		}
-		if rel == ".documax.ignore" {
-			return nil
-		}
-		if rel != ".gitignore" && ignorer.Match(strings.Split(rel, "/"), false) {
-			return nil
-		}
-		entries[rel] = treeEntry{}
+		entries[filepath.ToSlash(rel)] = core.TreeEntry{IsDir: info.IsDir()}
 		return nil
 	})
 	return entries, err
 }
 
-func collectActualTree(root string) (map[string]treeEntry, error) {
-	entries := map[string]treeEntry{}
-	err := filepath.Walk(root, func(current string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(root, current)
-		if err != nil {
-			return err
-		}
-		entries[filepath.ToSlash(rel)] = treeEntry{isDir: info.IsDir()}
-		return nil
-	})
-	return entries, err
-}
-
-func compareTrees(sourceRoot, unpackedRoot string, expected, actual map[string]treeEntry) ([]string, error) {
+func compareTrees(sourceRoot, unpackedRoot string, expected, actual map[string]core.TreeEntry) ([]string, error) {
 	var differences []string
 	for rel, expectedEntry := range expected {
 		actualEntry, exists := actual[rel]
@@ -182,11 +141,11 @@ func compareTrees(sourceRoot, unpackedRoot string, expected, actual map[string]t
 			differences = append(differences, "missing: "+rel)
 			continue
 		}
-		if actualEntry.isDir != expectedEntry.isDir {
+		if actualEntry.IsDir != expectedEntry.IsDir {
 			differences = append(differences, "type mismatch: "+rel)
 			continue
 		}
-		if expectedEntry.isDir {
+		if expectedEntry.IsDir {
 			continue
 		}
 		sourceData, err := os.ReadFile(filepath.Join(sourceRoot, filepath.FromSlash(rel)))
@@ -210,20 +169,20 @@ func compareTrees(sourceRoot, unpackedRoot string, expected, actual map[string]t
 	return differences, nil
 }
 
-func countDirectories(entries map[string]treeEntry) int {
+func countDirectories(entries map[string]core.TreeEntry) int {
 	count := 0
 	for _, entry := range entries {
-		if entry.isDir {
+		if entry.IsDir {
 			count++
 		}
 	}
 	return count
 }
 
-func countFiles(entries map[string]treeEntry) int {
+func countFiles(entries map[string]core.TreeEntry) int {
 	count := 0
 	for _, entry := range entries {
-		if !entry.isDir {
+		if !entry.IsDir {
 			count++
 		}
 	}

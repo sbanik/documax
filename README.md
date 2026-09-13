@@ -5,7 +5,7 @@ repairs, minimizes, expands, or unpacks it later. It is a Go CLI designed for
 source code, configuration, Markdown, and other text files where whitespace
 and indentation matter.
 
-> For development-only commands, configure gopls with -tags=devtools.
+> Developer-only validation is provided by the separate `documax-dev` executable and is not included in the distributed `documax` binary.
 
 ## Build
 
@@ -52,7 +52,9 @@ Documax automatically detects bracket and XML documents for `validate`,
 - File paths are relative to their directory section.
 - Structural tags must not be indented.
 - Empty directory sections are valid and are created by unpacking.
-- Do not use unescaped structural tags as ordinary expanded file content.
+- During packing, a payload containing structural tags is automatically stored
+  as `ENC=GZ+B64` so it cannot be mistaken for document structure. `unpack`
+  restores its original bytes.
 
 ## Minimized documents
 
@@ -156,10 +158,10 @@ only for trusted documents that intentionally contain absolute paths.
 ### Verify a pack/unpack round-trip
 
 This is a development-only command and is excluded from normal/Homebrew
-builds. Run it with the devtools build tag:
+builds. Run it with the separate developer executable:
 
 ~~~sh
-go run -tags=devtools ./cmd/documax validate-pack-unpack --dir ./my-project
+go run ./cmd/documax-dev validate-pack-unpack --dir ./my-project
 ~~~
 
 It creates a temporary archive and a temporary sibling unpack directory, then
@@ -213,7 +215,7 @@ and [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook).
 ## Development
 
 ```sh
-gofmt -w cmd/documax/main.go internal/documax/*.go
+gofmt -w cmd/documax/*.go cmd/documax-dev/*.go internal/core/*.go internal/documax/*.go internal/devtools/*.go
 go test ./...
 ```
 

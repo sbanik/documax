@@ -1,5 +1,5 @@
-// Package documax implements the Documax CLI and document operations.
-package documax
+// Package core implements Documax document parsing and file operations.
+package core
 
 import (
 	"bufio"
@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	pathpkg "path"
@@ -22,199 +21,7 @@ import (
 
 	gitignore "github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/schollz/progressbar/v3"
-	"github.com/spf13/cobra"
 )
-
-const DefaultDocFile = "documax-output.txt"
-
-type docFormat string
-
-const (
-	formatBracket docFormat = "bracket"
-	formatXML     docFormat = "xml"
-)
-
-// defaultIgnoredPaths lists operating-system metadata, IDE state, language
-// caches, and generated build artifacts that Documax never packs. Each name
-// applies at any depth in the source tree. Add project-specific exclusions to
-// .documax.ignore rather than widening this shared list.
-var defaultIgnoredPaths = []string{
-	".git",
-	".DS_Store",
-	".DS_STORE",
-	"Thumbs.db",
-	"ehthumbs.db",
-	"desktop.ini",
-	"Icon\\r",
-	"._*",
-	".Spotlight-V100",
-	".Trashes",
-	".fseventsd",
-	".idea",
-	".vscode",
-	".vs",
-	"__pycache__",
-	"__pylance__",
-	".pytest_cache",
-	".mypy_cache",
-	".ruff_cache",
-	".tox",
-	".nox",
-	".venv",
-	"venv",
-	"node_modules",
-	".gradle",
-	"target",
-	"build",
-	"dist",
-	"bin",
-	"obj",
-	"documax",
-	"documax.exe",
-	"*.test",
-	"*.out",
-	"coverage.out",
-	"*.swp",
-	"*.swo",
-	"*~",
-}
-
-var bracketTagRE = regexp.MustCompile(`\[DIR: ([^\]\r\n]+)\]|\[FILE: ([^\]\r\n]+)\]|\[/FILE\]|\[/DIR\]`)
-var xmlTagRE = regexp.MustCompile(`<d:dir\s+path="([^"]+)"\s*>|<d:file\s+path="([^"]+)"(?:\s+encoding="gzip\+base64")?\s*>|</d:file>|</d:dir>`)
-
-type diagnostic struct {
-	line    int
-	message string
-}
-type docFile struct {
-	path     string
-	line     int
-	content  []byte
-	escaped  bool
-	encoding string
-}
-type docDirectory struct {
-	path  string
-	line  int
-	files []docFile
-}
-type document struct {
-	format      docFormat
-	directories []docDirectory
-}
-type tag struct {
-	kind, path, encoding string
-	start, end, line     int
-}
-
-// NewRootCmd creates the Documax command-line application.
-func NewRootCmd() *cobra.Command {
-	root := &cobra.Command{Use: "documax", Short: "Documax - multi-document packaging utility"}
-	root.AddCommand(packCmd(), unpackCmd(), validateCmd(), fixCmd(), minifyCmd(), expandCmd())
-	addDevCommands(root)
-	return root
-}
-
-func packCmd() *cobra.Command {
-	var dir, output, format string
-	var interactive, minimized bool
-	cmd := &cobra.Command{
-		Use:   "pack",
-		Short: "Package a directory into a Documax document",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			ctx, cancel := setupSignalContext()
-			defer cancel()
-			if minimized {
-				return runPackMinimized(ctx, dir, output, docFormat(format), interactive)
-			}
-			if interactive {
-				return runPackInteractive(ctx, dir, output, docFormat(format))
-			}
-			if dir == "" {
-				return errors.New("missing --dir flag for directory packing")
-			}
-			return runPackDir(ctx, dir, output, docFormat(format))
-		},
-	}
-	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Directory to pack")
-	cmd.Flags().StringVarP(&output, "output", "o", DefaultDocFile, "Output Documax file path")
-	cmd.Flags().StringVarP(&format, "format", "f", string(formatBracket), "Output format: bracket or xml")
-	cmd.Flags().BoolVarP(&minimized, "minimize", "m", false, "Write a GZ+B64 minimized document directly")
-	cmd.Flags().BoolVar(&interactive, "from-clipboard", false, "Read pasted content until the content terminator")
-	return cmd
-}
-
-func unpackCmd() *cobra.Command {
-	var dir, subpath string
-	var allowAbsolute, fixInPlace bool
-	cmd := &cobra.Command{
-		Use:   "unpack [documax-file]",
-		Short: "Extract files and directories from a Documax document",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			ctx, cancel := setupSignalContext()
-			defer cancel()
-			input := DefaultDocFile
-			if len(args) == 1 {
-				input = args[0]
-			}
-			if _, err := os.Stat(input); err != nil {
-				return fmt.Errorf("cannot read %q: %w", input, err)
-			}
-			if dir == "" {
-				dir, _ = os.Getwd()
-			}
-			return runUnpack(ctx, input, dir, subpath, allowAbsolute, fixInPlace)
-		},
-	}
-	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Target root directory")
-	cmd.Flags().StringVarP(&subpath, "subpath", "s", "", "Directory subpath to extract")
-	cmd.Flags().BoolVar(&allowAbsolute, "allow-absolute-paths", false, "Allow absolute paths embedded in the document")
-	cmd.Flags().BoolVar(&fixInPlace, "fix-in-place", false, "Save automatic repairs to the input document")
-	return cmd
-}
-
-func validateCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "validate <documax-file>",
-		Short: "Check a document for format and structural errors",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			raw, err := os.ReadFile(args[0])
-			if err != nil {
-				return err
-			}
-			_, ds := parseDocument(raw)
-			if len(ds) == 0 {
-				fmt.Printf("%s: valid Documax format\n", args[0])
-				return nil
-			}
-			printDiagnostics(args[0], ds)
-			return errors.New("document failed validation")
-		},
-	}
-}
-
-func fixCmd() *cobra.Command {
-	var inPlace bool
-	cmd := &cobra.Command{Use: "fix <documax-file>", Short: "Apply conservative repairs to a document", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runFix(args[0], inPlace) }}
-	cmd.Flags().BoolVarP(&inPlace, "in-place", "i", false, "Overwrite the input file")
-	return cmd
-}
-
-func minifyCmd() *cobra.Command {
-	var output string
-	cmd := &cobra.Command{Use: "minimize <documax-file>", Short: "Compress file payloads as GZ+B64", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runMinify(args[0], output) }}
-	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to stdout)")
-	return cmd
-}
-
-func expandCmd() *cobra.Command {
-	var output string
-	cmd := &cobra.Command{Use: "expand <documax-file>", Short: "Decode GZ+B64 payloads into readable source", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runExpand(args[0], output) }}
-	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to stdout)")
-	return cmd
-}
 
 func parseDocument(raw []byte) (document, []diagnostic) {
 	doc := document{format: detectFormat(raw)}
@@ -361,6 +168,41 @@ func validateDocumax(file string) (bool, []string) {
 	return len(out) == 0, out
 }
 
+// ValidateFile checks a Documax document and returns compiler-style diagnostics.
+func ValidateFile(file string) (bool, []string) { return validateDocumax(file) }
+
+// FixFile applies conservative syntax repairs to a document.
+func FixFile(file string, inPlace bool) error { return runFix(file, inPlace) }
+
+// MinimizeFile compresses each file payload as GZ+B64.
+func MinimizeFile(file, output string) error { return runMinify(file, output) }
+
+// ExpandFile decodes GZ+B64 file payloads into readable source.
+func ExpandFile(file, output string) error { return runExpand(file, output) }
+
+// NewSignalContext returns a context cancelled on Ctrl+C or SIGTERM.
+func NewSignalContext() (context.Context, context.CancelFunc) { return setupSignalContext() }
+
+// PackDirectory writes an expanded Documax document from a directory.
+func PackDirectory(ctx context.Context, source, output, format string) error {
+	return runPackDir(ctx, source, output, docFormat(format))
+}
+
+// PackMinimized writes a GZ+B64 minimized Documax document from a directory.
+func PackMinimized(ctx context.Context, source, output, format string, interactive bool) error {
+	return runPackMinimized(ctx, source, output, docFormat(format), interactive)
+}
+
+// PackInteractive creates a document from pasted file paths and content.
+func PackInteractive(ctx context.Context, scope, output, format string) error {
+	return runPackInteractive(ctx, scope, output, docFormat(format))
+}
+
+// Unpack extracts an expanded or minimized Documax document.
+func Unpack(ctx context.Context, file, root, subpath string, allowAbsolute, fixInPlace bool) error {
+	return runUnpack(ctx, file, root, subpath, allowAbsolute, fixInPlace)
+}
+
 func fixDocument(raw []byte) ([]byte, []diagnostic, bool) {
 	format := detectFormat(raw)
 	indentRE := regexp.MustCompile(`(?m)^[\t ]+(?:\[(?:DIR:|FILE:|/FILE|/DIR)|<d:)`)
@@ -416,7 +258,6 @@ func fixDocument(raw []byte) ([]byte, []diagnostic, bool) {
 	}
 	if inFile {
 		addEnd(len(fixed), lineAt(fixed, len(fixed)))
-		inFile = false
 	}
 	if inDir {
 		prefix := ""
@@ -494,7 +335,7 @@ func gzipBase64Decode(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	return io.ReadAll(r)
 }
 func directoryHeader(format docFormat, p string) string {
@@ -520,6 +361,12 @@ func fileEnd(format docFormat) string {
 		return "</d:file>"
 	}
 	return "[/FILE]"
+}
+
+// payloadNeedsEncoding reports whether raw file bytes would be interpreted as
+// Documax structure if emitted verbatim in this document format.
+func payloadNeedsEncoding(data []byte, format docFormat) bool {
+	return len(parseTags(data, format)) > 0
 }
 func dirEnd(format docFormat) string {
 	if format == formatXML {
@@ -581,7 +428,14 @@ func renderExpanded(doc document) []byte {
 				continue
 			}
 			body := string(data)
-			out.WriteString(fileHeader(doc.format, f.path, false))
+			encoded := payloadNeedsEncoding(data, doc.format)
+			if encoded {
+				body, err = gzipBase64Encode(data)
+				if err != nil {
+					continue
+				}
+			}
+			out.WriteString(fileHeader(doc.format, f.path, encoded))
 			out.WriteByte('\n')
 			out.WriteString(body)
 			if !strings.HasSuffix(body, "\n") {
@@ -603,8 +457,6 @@ func writeOutput(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-type packItem struct{ rel, full string }
-
 func runPackMinimized(ctx context.Context, source, output string, format docFormat, interactive bool) error {
 	outputPath, err := filepath.Abs(output)
 	if err != nil {
@@ -621,7 +473,7 @@ func runPackMinimized(ctx context.Context, source, output string, format docForm
 	if err := os.Remove(tempPath); err != nil {
 		return err
 	}
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 
 	if interactive {
 		err = runPackInteractive(ctx, source, tempPath, format)
@@ -714,7 +566,7 @@ func runPackDir(ctx context.Context, source, output string, formats ...docFormat
 		return err
 	}
 	tmpName := tmp.Name()
-	defer func() { tmp.Close(); os.Remove(tmpName) }()
+	defer func() { _ = tmp.Close(); _ = os.Remove(tmpName) }()
 	w := bufio.NewWriter(tmp)
 	root := filepath.Base(abs) + "/"
 	if _, err = w.WriteString(directoryHeader(format, root) + "\n"); err != nil {
@@ -732,7 +584,20 @@ func runPackDir(ctx context.Context, source, output string, formats ...docFormat
 			return err
 		}
 		body := string(data)
-		if _, err = w.WriteString(fileHeader(format, item.rel, false) + "\n" + body); err != nil {
+		encoded := payloadNeedsEncoding(data, format)
+		if encoded {
+			body, err = gzipBase64Encode(data)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err = w.WriteString(fileHeader(format, item.rel, encoded)); err != nil {
+			return err
+		}
+		if err = w.WriteByte('\n'); err != nil {
+			return err
+		}
+		if _, err = w.WriteString(body); err != nil {
 			return err
 		}
 		if !strings.HasSuffix(body, "\n") {
@@ -777,6 +642,42 @@ func isDefaultIgnored(rel string) bool {
 		}
 	}
 	return false
+}
+
+// CollectPackableTree returns the relative directory and file tree that would
+// be included by PackDirectory. It is used by developer validation tooling.
+func CollectPackableTree(root string) (map[string]TreeEntry, error) {
+	ignorer := buildGitIgnore(root)
+	entries := map[string]TreeEntry{}
+	err := filepath.Walk(root, func(current string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, current)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if isDefaultIgnored(rel) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() {
+			if rel != "." && ignorer.Match(strings.Split(rel, "/"), true) {
+				return filepath.SkipDir
+			}
+			entries[rel] = TreeEntry{IsDir: true}
+			return nil
+		}
+		if rel == ".documax.ignore" || (rel != ".gitignore" && ignorer.Match(strings.Split(rel, "/"), false)) {
+			return nil
+		}
+		entries[rel] = TreeEntry{}
+		return nil
+	})
+	return entries, err
 }
 
 func runPackInteractive(ctx context.Context, scope, output string, formats ...docFormat) error {
@@ -832,15 +733,6 @@ func runPackInteractive(ctx context.Context, scope, output string, formats ...do
 		doc.directories[0].files = append(doc.directories[0].files, docFile{path: filepath.ToSlash(p), content: []byte(body.String())})
 	}
 	return os.WriteFile(output, renderExpanded(doc), 0644)
-}
-
-type unpackFile struct {
-	path string
-	data []byte
-}
-type unpackPlan struct {
-	dirs  []string
-	files []unpackFile
 }
 
 func runUnpack(ctx context.Context, file, root, subpath string, options ...bool) error {
@@ -983,7 +875,7 @@ func writeAtomically(ctx context.Context, target string, data []byte) error {
 		return err
 	}
 	name := tmp.Name()
-	defer func() { tmp.Close(); os.Remove(name) }()
+	defer func() { _ = tmp.Close(); _ = os.Remove(name) }()
 	if _, err = tmp.Write(data); err != nil {
 		return err
 	}
@@ -1010,21 +902,6 @@ func matchesSubpath(target, subpath string) bool {
 	}
 	return false
 }
-func escapeMarkers(s string) (string, bool) {
-	changed := false
-	if strings.Contains(s, "|<---") {
-		s = strings.ReplaceAll(s, "|<---", `\|\<---`)
-		changed = true
-	}
-	if strings.Contains(s, "|>---") {
-		s = strings.ReplaceAll(s, "|>---", `\|\>---`)
-		changed = true
-	}
-	return s, changed
-}
-func unescapeMarkers(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, `\|\<---`, "|<---"), `\|\>---`, "|>---")
-}
 func buildGitIgnore(base string) gitignore.Matcher {
 	var patterns []gitignore.Pattern
 	for _, name := range []string{".gitignore", ".documax.ignore"} {
@@ -1033,16 +910,15 @@ func buildGitIgnore(base string) gitignore.Matcher {
 			continue
 		}
 		sc := bufio.NewScanner(f)
-		if err := sc.Err(); err != nil{
-			log.Panicf("error building git ignore: %v", err)
-		}
 		for sc.Scan() {
 			s := strings.TrimSpace(sc.Text())
 			if s != "" && !strings.HasPrefix(s, "#") {
 				patterns = append(patterns, gitignore.ParsePattern(s, nil))
 			}
 		}
-		f.Close()
+		// Scanner errors leave the usable patterns intact. Packing will still
+		// surface file-system errors while walking the source directory.
+		_ = f.Close()
 	}
 	return gitignore.NewMatcher(patterns)
 }

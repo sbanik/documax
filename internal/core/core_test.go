@@ -1,4 +1,4 @@
-package documax
+package core
 
 import (
 	"bytes"
@@ -59,6 +59,36 @@ func TestPackMinimizedDirectly(t *testing.T) {
 	}
 	if !bytes.Contains(packed, []byte(";ENC=GZ+B64]")) {
 		t.Fatalf("direct pack did not minimize output: %s", packed)
+	}
+}
+
+func TestPackEncodesPayloadContainingStructuralTags(t *testing.T) {
+	source := t.TempDir()
+	target := t.TempDir()
+	output := filepath.Join(t.TempDir(), "archive.txt")
+	payload := "[DIR: example/]\n[FILE: notes.txt]\ntext\n[/FILE]\n[/DIR]\n"
+	if err := os.WriteFile(filepath.Join(source, "embedded-documax.txt"), []byte(payload), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPackDir(context.Background(), source, output, formatBracket); err != nil {
+		t.Fatal(err)
+	}
+	packed, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(packed, []byte("[FILE: embedded-documax.txt;ENC=GZ+B64]")) {
+		t.Fatalf("structural payload was not encoded: %s", packed)
+	}
+	if err := runUnpack(context.Background(), output, target, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, filepath.Base(source), "embedded-documax.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, []byte(payload)) {
+		t.Fatalf("payload changed:\n%s", got)
 	}
 }
 

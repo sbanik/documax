@@ -40,10 +40,10 @@ test:
 devtools:
 	@if [ -n "$(DIR)" ]; then \
 		echo "Running development pack/unpack validation for $(DIR)..."; \
-		$(GO) run -tags=devtools ./cmd/documax validate-pack-unpack --dir "$(DIR)"; \
+		$(GO) run ./cmd/documax-dev validate-pack-unpack --dir "$(DIR)"; \
 	else \
-		echo "Running Documax tests with the devtools build tag..."; \
-		$(GO) test -v -tags=devtools ./...; \
+		echo "Running Documax and developer-tool tests..."; \
+		$(GO) test -v ./...; \
 	fi
 	@echo "Development task passed."
 

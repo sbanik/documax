@@ -192,14 +192,28 @@ directory for inspection.
 
 ## Homebrew
 
-Publish Documax as a Homebrew **formula**, not a cask. After creating a tagged
-GitHub release, create a personal tap and add `Formula/documax.rb`:
+After the formula is published in the `sbanik/homebrew-tap` personal tap,
+install Documax with:
+
+```sh
+brew install sbanik/homebrew-tap/documax
+```
+
+Alternatively, tap once and use the shorter command afterward:
+
+```sh
+brew tap sbanik/homebrew-tap
+brew install documax
+```
+
+Documax is packaged as a Homebrew **formula**, not a cask. The tap contains
+`Formula/documax.rb`:
 
 ```ruby
 class Documax < Formula
   desc "Package and restore directory trees as portable documents"
-  homepage "https://github.com/YOUR_GITHUB_USERNAME/documax"
-  url "https://github.com/YOUR_GITHUB_USERNAME/documax/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/sbanik/documax"
+  url "https://github.com/sbanik/documax/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
   license "MIT"
 
@@ -210,23 +224,23 @@ class Documax < Formula
   end
 
   test do
-    (testpath/"input.txt").write <<~EOS
-      [DIR: project/]
-      [FILE: main.py]
-      print("hello")
-      [/FILE]
-      [/DIR]
-    EOS
-    system bin/"documax", "validate", "input.txt"
+    source = testpath/"project"
+    source.mkpath
+    (source/"main.py").write "if True:\n    print(\"hello\")\n"
+
+    system bin/"documax", "pack", source
+    archive = testpath/"project-documax.md"
+    assert_predicate archive, :exist?
+    system bin/"documax", "validate", archive
   end
 end
 ```
 
 ```sh
-brew tap-new YOUR_GITHUB_USERNAME/homebrew-tap
-brew install --build-from-source YOUR_GITHUB_USERNAME/homebrew-tap/documax
-brew test YOUR_GITHUB_USERNAME/homebrew-tap/documax
-brew audit --strict --online YOUR_GITHUB_USERNAME/homebrew-tap/documax
+brew tap-new sbanik/homebrew-tap
+brew install --build-from-source sbanik/homebrew-tap/documax
+brew test sbanik/homebrew-tap/documax
+brew audit --strict --online sbanik/homebrew-tap/documax
 ```
 
 See the official [tap guide](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)

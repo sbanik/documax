@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 	pathpkg "path"
@@ -117,20 +118,24 @@ func NewRootCmd() *cobra.Command {
 func packCmd() *cobra.Command {
 	var dir, output, format string
 	var interactive, minimized bool
-	cmd := &cobra.Command{Use: "pack", RunE: func(_ *cobra.Command, _ []string) error {
-		ctx, cancel := setupSignalContext()
-		defer cancel()
-		if minimized {
-			return runPackMinimized(ctx, dir, output, docFormat(format), interactive)
-		}
-		if interactive {
-			return runPackInteractive(ctx, dir, output, docFormat(format))
-		}
-		if dir == "" {
-			return errors.New("missing --dir flag for directory packing")
-		}
-		return runPackDir(ctx, dir, output, docFormat(format))
-	}}
+	cmd := &cobra.Command{
+		Use:   "pack",
+		Short: "Package a directory into a Documax document",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			ctx, cancel := setupSignalContext()
+			defer cancel()
+			if minimized {
+				return runPackMinimized(ctx, dir, output, docFormat(format), interactive)
+			}
+			if interactive {
+				return runPackInteractive(ctx, dir, output, docFormat(format))
+			}
+			if dir == "" {
+				return errors.New("missing --dir flag for directory packing")
+			}
+			return runPackDir(ctx, dir, output, docFormat(format))
+		},
+	}
 	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Directory to pack")
 	cmd.Flags().StringVarP(&output, "output", "o", DefaultDocFile, "Output Documax file path")
 	cmd.Flags().StringVarP(&format, "format", "f", string(formatBracket), "Output format: bracket or xml")
@@ -142,21 +147,26 @@ func packCmd() *cobra.Command {
 func unpackCmd() *cobra.Command {
 	var dir, subpath string
 	var allowAbsolute, fixInPlace bool
-	cmd := &cobra.Command{Use: "unpack [documax-file]", Args: cobra.MaximumNArgs(1), RunE: func(_ *cobra.Command, args []string) error {
-		ctx, cancel := setupSignalContext()
-		defer cancel()
-		input := DefaultDocFile
-		if len(args) == 1 {
-			input = args[0]
-		}
-		if _, err := os.Stat(input); err != nil {
-			return fmt.Errorf("cannot read %q: %w", input, err)
-		}
-		if dir == "" {
-			dir, _ = os.Getwd()
-		}
-		return runUnpack(ctx, input, dir, subpath, allowAbsolute, fixInPlace)
-	}}
+	cmd := &cobra.Command{
+		Use:   "unpack [documax-file]",
+		Short: "Extract files and directories from a Documax document",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ctx, cancel := setupSignalContext()
+			defer cancel()
+			input := DefaultDocFile
+			if len(args) == 1 {
+				input = args[0]
+			}
+			if _, err := os.Stat(input); err != nil {
+				return fmt.Errorf("cannot read %q: %w", input, err)
+			}
+			if dir == "" {
+				dir, _ = os.Getwd()
+			}
+			return runUnpack(ctx, input, dir, subpath, allowAbsolute, fixInPlace)
+		},
+	}
 	cmd.Flags().StringVarP(&dir, "dir", "d", "", "Target root directory")
 	cmd.Flags().StringVarP(&subpath, "subpath", "s", "", "Directory subpath to extract")
 	cmd.Flags().BoolVar(&allowAbsolute, "allow-absolute-paths", false, "Allow absolute paths embedded in the document")
@@ -165,38 +175,43 @@ func unpackCmd() *cobra.Command {
 }
 
 func validateCmd() *cobra.Command {
-	return &cobra.Command{Use: "validate <documax-file>", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error {
-		raw, err := os.ReadFile(args[0])
-		if err != nil {
-			return err
-		}
-		_, ds := parseDocument(raw)
-		if len(ds) == 0 {
-			fmt.Printf("%s: valid Documax format\n", args[0])
-			return nil
-		}
-		printDiagnostics(args[0], ds)
-		return errors.New("document failed validation")
-	}}
+	return &cobra.Command{
+		Use:   "validate <documax-file>",
+		Short: "Check a document for format and structural errors",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			raw, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			_, ds := parseDocument(raw)
+			if len(ds) == 0 {
+				fmt.Printf("%s: valid Documax format\n", args[0])
+				return nil
+			}
+			printDiagnostics(args[0], ds)
+			return errors.New("document failed validation")
+		},
+	}
 }
 
 func fixCmd() *cobra.Command {
 	var inPlace bool
-	cmd := &cobra.Command{Use: "fix <documax-file>", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runFix(args[0], inPlace) }}
+	cmd := &cobra.Command{Use: "fix <documax-file>", Short: "Apply conservative repairs to a document", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runFix(args[0], inPlace) }}
 	cmd.Flags().BoolVarP(&inPlace, "in-place", "i", false, "Overwrite the input file")
 	return cmd
 }
 
 func minifyCmd() *cobra.Command {
 	var output string
-	cmd := &cobra.Command{Use: "minimize <documax-file>", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runMinify(args[0], output) }}
+	cmd := &cobra.Command{Use: "minimize <documax-file>", Short: "Compress file payloads as GZ+B64", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runMinify(args[0], output) }}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to stdout)")
 	return cmd
 }
 
 func expandCmd() *cobra.Command {
 	var output string
-	cmd := &cobra.Command{Use: "expand <documax-file>", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runExpand(args[0], output) }}
+	cmd := &cobra.Command{Use: "expand <documax-file>", Short: "Decode GZ+B64 payloads into readable source", Args: cobra.ExactArgs(1), RunE: func(_ *cobra.Command, args []string) error { return runExpand(args[0], output) }}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file (defaults to stdout)")
 	return cmd
 }
@@ -1018,6 +1033,9 @@ func buildGitIgnore(base string) gitignore.Matcher {
 			continue
 		}
 		sc := bufio.NewScanner(f)
+		if err := sc.Err(); err != nil{
+			log.Panicf("error building git ignore: %v", err)
+		}
 		for sc.Scan() {
 			s := strings.TrimSpace(sc.Text())
 			if s != "" && !strings.HasPrefix(s, "#") {

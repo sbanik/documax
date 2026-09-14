@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Prepare a Homebrew formula update for an already-published Documax tag.
 #
-# The script calculates the immutable source archive's SHA-256 and edits the
-# local formula. Git commits, pushes, and tag creation stay manual.
+# The script calculates the immutable source archive's SHA-256, validates the
+# local formula, then commits and pushes the Homebrew tap. Source-repository
+# commits, pushes, and tag creation stay manual.
 set -euo pipefail
 
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -131,6 +132,16 @@ contents.sub!(/^  sha256 "[^"]+"$/, "  sha256 \"#{checksum}\"")
 File.write(formula, contents.end_with?("\n") ? contents : "#{contents}\n")
 RUBY
 
+echo "Building and validating the updated Homebrew formula..."
+brew install --build-from-source "$tap_name/documax"
+brew test "$tap_name/documax"
+brew audit --strict --online "$tap_name/documax"
+
+echo "Publishing the validated Homebrew formula update..."
+git -C "$tap_dir" add Formula/documax.rb
+git -C "$tap_dir" commit -m "Update documax to ${version#v}"
+git -C "$tap_dir" push origin main
+
 cat <<EOF
 
 Prepared Homebrew formula update:
@@ -139,11 +150,5 @@ Prepared Homebrew formula update:
   URL:      $archive_url
   SHA-256:  $checksum
 
-Review and publish it with:
-  brew install --build-from-source $tap_name/documax
-  brew test $tap_name/documax
-  brew audit --strict --online $tap_name/documax
-  git -C "$tap_dir" add Formula/documax.rb
-  git -C "$tap_dir" commit -m "Update documax to ${version#v}"
-  git -C "$tap_dir" push origin main
+Homebrew formula update published successfully.
 EOF

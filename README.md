@@ -270,12 +270,16 @@ Without it, the script exits and shows usage. With it, you confirm that you want
 - Download the already-published tag archive.
 - Calculate its SHA-256.
 - Edit your local Homebrew formula’s url and sha256.
-It does not commit, push, create a tag, or publish anything to GitHub. Those remain manual.
+- Build, test, and audit the updated Homebrew formula.
+- Commit and push the validated formula update to the Homebrew tap.
+
+It does not commit, push, or create tags in the Documax repository; those
+source-release steps remain manual.
 
 After you manually commit, push, create, and push the tag, it runs the project
-tests, calculates the source archive's SHA-256, and updates the local tap
-formula. It then prints the audit, test, commit, and push commands so you can
-review the formula update before publishing it.
+tests, calculates the source archive's SHA-256, updates the local tap formula,
+and runs the Homebrew build, test, and audit. If they pass, it commits and
+pushes the formula update to the tap automatically.
 
 ## Development
 

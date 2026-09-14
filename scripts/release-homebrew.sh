@@ -5,6 +5,10 @@
 # local formula. Git commits, pushes, and tag creation stay manual.
 set -euo pipefail
 
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source_root="$(cd "$script_directory/.." && pwd)"
+cd "$source_root"
+
 usage() {
   cat <<'EOF'
 Usage: scripts/release-homebrew.sh vX.Y.Z --github-user USERNAME --yes

@@ -270,7 +270,7 @@ git add .
 git commit -m "<commit-message>"
 git push origin main
 
-# 2. Create and push the tag yourself.
+# 2. Create and push the tag yourself. Set version as required
 git tag -a v0.1.1 -m "Documax v0.1.1"
 git push origin v0.1.1
 

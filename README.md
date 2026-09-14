@@ -246,6 +246,37 @@ brew audit --strict --online sbanik/homebrew-tap/documax
 See the official [tap guide](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)
 and [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook).
 
+### Homebrew Release Script
+
+For later tagged releases, run the included helper from the Documax repository:
+
+```sh
+# 1. Commit and push Documax yourself. Assuming you are in main branch.
+git add .
+git commit -m "<commit-message>"
+git push origin main
+
+# 2. Create and push the tag yourself.
+git tag -a v0.1.1 -m "Documax v0.1.1"
+git push origin v0.1.1
+
+# 3. Update the local formula automatically.
+scripts/release-homebrew.sh v0.1.1 --github-user your-github-username --yes
+```
+
+Note: `--yes` is an explicit safety acknowledgement.
+Without it, the script exits and shows usage. With it, you confirm that you want the script to:
+- Run tests.
+- Download the already-published tag archive.
+- Calculate its SHA-256.
+- Edit your local Homebrew formula’s url and sha256.
+It does not commit, push, create a tag, or publish anything to GitHub. Those remain manual.
+
+After you manually commit, push, create, and push the tag, it runs the project
+tests, calculates the source archive's SHA-256, and updates the local tap
+formula. It then prints the audit, test, commit, and push commands so you can
+review the formula update before publishing it.
+
 ## Development
 
 ```sh

@@ -61,7 +61,7 @@ func packCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file path or output directory")
 	cmd.Flags().StringVarP(&format, "format", "f", "bracket", "Output format: bracket or xml")
 	cmd.Flags().BoolVarP(&minimized, "minimized", "m", false, "Write a GZ+B64 minimized document directly")
-	cmd.Flags().BoolVar(&interactive, "from-clipboard", false, "Read pasted content until the content terminator")
+	cmd.Flags().BoolVarP(&interactive, "from-clipboard", "c", false, "Read pasted content until the content terminator")
 	return cmd
 }
 

@@ -749,14 +749,14 @@ func runPackInteractive(ctx context.Context, scope, output string, formats ...do
 			fmt.Printf("Invalid path: %v\n", err)
 			continue
 		}
-		fmt.Println("Paste content, then enter |>--- CONTENT ---<| on its own line:")
+		fmt.Println("Paste content, then enter :q on its own line:")
 		var body strings.Builder
 		for {
 			line, err := r.ReadString('\n')
 			if err != nil && len(line) == 0 {
 				return err
 			}
-			if strings.TrimRight(line, "\r\n") == "|>--- CONTENT ---<|" {
+			if strings.TrimRight(line, "\r\n") == ":q" {
 				break
 			}
 			body.WriteString(line)

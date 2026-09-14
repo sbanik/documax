@@ -206,6 +206,20 @@ brew tap sbanik/homebrew-tap
 brew install documax
 ```
 
+To update the version of documax, upgrade the formula:
+```bash
+brew upgrade sbanik/homebrew-tag/documax
+```
+
+## Development
+
+```sh
+gofmt -w cmd/documax/*.go cmd/documax-dev/*.go internal/core/*.go internal/documax/*.go internal/devtools/*.go
+go test ./...
+```
+
+### Homebrew Release
+
 Documax is packaged as a Homebrew **formula**, not a cask. The tap contains
 `Formula/documax.rb`:
 
@@ -246,7 +260,7 @@ brew audit --strict --online sbanik/homebrew-tap/documax
 See the official [tap guide](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)
 and [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook).
 
-### Homebrew Release Script
+#### Automated Script
 
 For later tagged releases, run the included helper from the Documax repository:
 
@@ -280,13 +294,6 @@ After you manually commit, push, create, and push the tag, it runs the project
 tests, calculates the source archive's SHA-256, updates the local tap formula,
 and runs the Homebrew build, test, and audit. If they pass, it commits and
 pushes the formula update to the tap automatically.
-
-## Development
-
-```sh
-gofmt -w cmd/documax/*.go cmd/documax-dev/*.go internal/core/*.go internal/documax/*.go internal/devtools/*.go
-go test ./...
-```
 
 ## License
 
